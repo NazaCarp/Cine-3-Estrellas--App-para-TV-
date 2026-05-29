@@ -1,0 +1,36 @@
+# Gradle/build artifacts
+.gradle/
+build/
+**/build/
+app/build/
+
+# Local config
+local.properties
+*.keystore
+*.jks
+*.hprof
+*.log
+
+# Kotlin tooling
+.kotlin/
+.kotlinc/
+app/.cxx/
+
+# Android Studio/IDE files
+*.iml
+.idea/workspace.xml
+.idea/caches/
+.idea/libraries/
+.idea/modules.xml
+.idea/gradle.xml
+.idea/tasks.xml
+
+# Android packaging
+*.apk
+*.ap_
+*.aab
+*.apks
+
+# Misc
+.DS_Store
+Thumbs.db

@@ -1,0 +1,19 @@
+id,name,icon,order,show_in_home,keywords,genre_ids,min_rating,sort_by,max_items
+action,Acción y Aventura,MapIcon,14,true,[],"[28,12]",0,created_at,20
+animation,Mundo Animado,PaintBrushIcon,3,true,[],[16],0,created_at,20
+based_on_novel,Libros Hechos Cine,BookOpenIcon,12,true,"[""based on novel"",""based on book"",""based on novel or book""]",[],0,created_at,20
+comedy,Comedia,FaceSmileIcon,4,true,[],[35],0,created_at,20
+creatures,Criaturas de la Noche,MoonIcon,11,true,"[""vampire"",""werewolf"",""monster"",""ghost""]",[],0,created_at,20
+drama,Dramas y Romance,HeartIcon,17,true,[],"[18,10749]",0,created_at,20
+fantasy,Ciencia Ficción,CpuChipIcon,5,true,[],"[14,878]",0,created_at,20
+horror,Terror y Suspenso,MoonIcon,16,true,[],"[27,53,9648]",0,created_at,20
+independent_film,Película Independiente,BookmarkIcon,9,true,"[""independent film""]",[],0,created_at,20
+martial_arts,Artes Marciales,HandRaisedIcon,7,true,"[""martial arts""]",[],0,created_at,20
+musical,Musical,SparklesIcon,17,true,"[""musical""]",[],0,created_at,20
+newly_added,Recién Agregadas,SparklesIcon,1,true,[],[],0,created_at,20
+popular,Lo Más Visto,ChartBarIcon,2,true,[],[],0,popularity,20
+revenge,Sed de Venganza,FireIcon,8,true,"[""revenge""]",[],0,created_at,20
+superhero,Mundo de Héroes,BoltIcon,15,true,"[""superhero"",""based on comic""]",[],0,created_at,20
+top_rated,Más Valoradas,StarIcon,6,true,[],[],7,vote_average,20
+true_story,Basado en Hechos Reales,FingerPrintIcon,13,true,"[""based on true story""]",[],0,created_at,20
+zombie,Invasión Zombi,LifebuoyIcon,10,true,"[""zombie""]",[],0,created_at,20
