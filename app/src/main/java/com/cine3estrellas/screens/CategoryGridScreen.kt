@@ -34,14 +34,23 @@ fun CategoryGridScreen(
 ) {
     val category = remember(categoryId) { DataCache.homeCategories.find { it.id == categoryId } }
     var movies by remember { mutableStateOf(DataCache.homeCategoryMovies[categoryId] ?: emptyList()) }
-    val totalCount = DataCache.homeCategoryTotalCounts[categoryId] ?: movies.size.toLong()
+    val totalCount = DataCache.homeCategoryTotalCounts[categoryId] ?: 999999L
     val scope = rememberCoroutineScope()
     val backButtonRequester = remember { FocusRequester() }
-    val itemRequesters = remember(movies.size) { List(movies.size + 100) { FocusRequester() } }
+    val itemRequesters = remember { 
+        val list = mutableStateListOf<FocusRequester>()
+        repeat(movies.size) { list.add(FocusRequester()) }
+        list
+    }
+    LaunchedEffect(movies.size) {
+        while (itemRequesters.size < movies.size) {
+            itemRequesters.add(FocusRequester())
+        }
+    }
     
     var isPageLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
-
+ 
     fun loadNextPage() {
         if (isPageLoading || movies.size >= totalCount || category == null) return
         
@@ -66,8 +75,15 @@ fun CategoryGridScreen(
                         range(fromIndex, toIndex)
                     }
                 val newMovies = response.decodeList<Movie>()
-                movies = movies + newMovies
-                DataCache.homeCategoryMovies[categoryId] = movies
+                if (newMovies.isEmpty()) {
+                    DataCache.homeCategoryTotalCounts[categoryId] = movies.size.toLong()
+                } else {
+                    movies = movies + newMovies
+                    DataCache.homeCategoryMovies[categoryId] = movies
+                    if (newMovies.size < 100) {
+                        DataCache.homeCategoryTotalCounts[categoryId] = movies.size.toLong()
+                    }
+                }
             } catch (e: Exception) {
                 if (movies.isEmpty()) {
                     errorMessage = "Error al cargar categoría: ${e.message}"
@@ -127,22 +143,9 @@ fun CategoryGridScreen(
                     movie = movie,
                     onClick = { onMovieClick(movie.id) },
                     screenKey = "category_$categoryId",
-                    modifier = Modifier
-                        .focusRequester(itemRequesters[index])
-                        .focusProperties {
-                            if (index + 1 < movies.size) {
-                                right = itemRequesters[index + 1]
-                            }
-                            if (index > 0) {
-                                left = itemRequesters[index - 1]
-                            }
-
-                            // Solo forzamos el botón VOLVER para los primeros 3 elementos
-                            // El resto de la primera fila llegará al botón por búsqueda natural de foco
-                            if (index < 3) {
-                                up = backButtonRequester
-                            }
-                        }
+                    focusRequester = if (index < itemRequesters.size) itemRequesters[index] else remember { FocusRequester() },
+                    nextFocusRequester = if (index + 1 < itemRequesters.size) itemRequesters[index + 1] else null,
+                    upFocus = if (index < 3) backButtonRequester else null
                 )
             }
             
@@ -205,7 +208,7 @@ fun CategoryGridScreen(
                     modifier = Modifier
                         .focusRequester(backButtonRequester)
                         .focusProperties {
-                            if (movies.isNotEmpty()) {
+                            if (itemRequesters.isNotEmpty()) {
                                 down = itemRequesters[0]
                             }
                         },

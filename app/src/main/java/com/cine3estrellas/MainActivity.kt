@@ -25,6 +25,7 @@ import androidx.compose.ui.focus.*
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -58,7 +59,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalTvMaterial3Api::class)
+@OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun MainScreen() {
     val navController = rememberNavController()
@@ -71,13 +72,34 @@ fun MainScreen() {
     LaunchedEffect(Unit) {
         val savedId = DataCache.loadSavedId(context)
         if (savedId != null) {
-            val isMember = TelegramManager.checkGroupMembership(savedId)
-            if (isMember) {
-                val user = TelegramManager.getUserInfo(savedId)
-                if (user != null) {
-                    DataCache.currentUser = user
-                    DataCache.isLoggedIn = true
+            val telegramIdLong = savedId.toLongOrNull()
+            if (telegramIdLong != null) {
+                var isMember = true
+                var currentTelegramUser: User? = null
+                
+                // 1. Check membership via Telegram Bot API only if 24 hours have passed
+                if (DataCache.shouldCheckMembership(context)) {
+                    isMember = TelegramManager.checkGroupMembership(savedId)
+                    if (isMember) {
+                        currentTelegramUser = TelegramManager.getUserInfo(savedId)
+                        DataCache.updateMembershipCheckTime(context)
+                    }
                 }
+
+                if (isMember) {
+                    val telegramUserObj = currentTelegramUser ?: User(telegramId = telegramIdLong)
+                    val syncedUser = SupabaseManager.syncUser(context, telegramUserObj)
+                    if (syncedUser != null) {
+                        DataCache.currentUser = syncedUser
+                        DataCache.isLoggedIn = true
+                    } else {
+                        DataCache.logout(context)
+                    }
+                } else {
+                    DataCache.logout(context)
+                }
+            } else {
+                DataCache.logout(context)
             }
         }
         isCheckingSession = false
@@ -93,19 +115,67 @@ fun MainScreen() {
         return
     }
 
-    val tabs = listOf("Inicio", "Buscar", "Explorar", "Favoritos")
+    val tabs = listOf("Buscar", "Inicio", "Explorar", "Favoritos")
     val tabFocusRequesters = remember { List(tabs.size) { FocusRequester() } }
     val exploreFocusRequester = remember { FocusRequester() }
     
     val sidebarWidth by animateDpAsState(
         targetValue = if (isSidebarFocused) 220.dp else 80.dp,
-        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+        animationSpec = tween(durationMillis = 400, easing = FastOutSlowInEasing),
         label = "sidebarWidth"
     )
 
+    val sidebarBgColor by animateColorAsState(
+        targetValue = if (isSidebarFocused) Color(0xF20A0C10) else Color(0x660A0C10),
+        animationSpec = tween(durationMillis = 400, easing = FastOutSlowInEasing),
+        label = "sidebarBgColor"
+    )
+
+    val sidebarBorderColor by animateColorAsState(
+        targetValue = if (isSidebarFocused) Gold.copy(alpha = 0.1f) else Color.White.copy(alpha = 0.05f),
+        animationSpec = tween(durationMillis = 400, easing = FastOutSlowInEasing),
+        label = "sidebarBorderColor"
+    )
+
+    val logoSize by animateDpAsState(
+        targetValue = if (isSidebarFocused) 48.dp else 40.dp,
+        animationSpec = tween(durationMillis = 400, easing = FastOutSlowInEasing),
+        label = "logoSize"
+    )
+    
+    val brandTextHeight by animateDpAsState(
+        targetValue = if (isSidebarFocused) 30.dp else 0.dp,
+        animationSpec = tween(durationMillis = 400, easing = FastOutSlowInEasing),
+        label = "brandTextHeight"
+    )
+    
+    val brandTextOpacity by animateFloatAsState(
+        targetValue = if (isSidebarFocused) 1f else 0f,
+        animationSpec = tween(durationMillis = 400, easing = FastOutSlowInEasing),
+        label = "brandTextOpacity"
+    )
+    
+    val brandTextOffsetY by animateDpAsState(
+        targetValue = if (isSidebarFocused) 0.dp else 10.dp,
+        animationSpec = tween(durationMillis = 400, easing = FastOutSlowInEasing),
+        label = "brandTextOffsetY"
+    )
+
+    val labelAlpha by animateFloatAsState(
+        targetValue = if (isSidebarFocused) 1f else 0f,
+        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+        label = "labelAlpha"
+    )
+    
+    val labelTranslationX by animateDpAsState(
+        targetValue = if (isSidebarFocused) 0.dp else (-10).dp,
+        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+        label = "labelTranslationX"
+    )
+
     val icons = listOf(
-        Icons.Default.Home,
         Icons.Default.Search,
+        Icons.Default.Home,
         Icons.Default.Explore,
         Icons.Default.Favorite
     )
@@ -221,8 +291,8 @@ fun MainScreen() {
             // Capa de la Sidebar (Overlay)
             androidx.compose.animation.AnimatedVisibility(
                 visible = !hideSidebar,
-                enter = fadeIn(tween(150)),
-                exit = fadeOut(tween(150))
+                enter = fadeIn(tween(400)),
+                exit = fadeOut(tween(400))
             ) {
                 Surface(
                     modifier = Modifier
@@ -230,22 +300,18 @@ fun MainScreen() {
                         .width(sidebarWidth)
                         .onFocusChanged { isSidebarFocused = it.hasFocus },
                     colors = SurfaceDefaults.colors(
-                        containerColor = Color(0xFF080808),
+                        containerColor = sidebarBgColor,
                     ),
                     shape = RectangleShape
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
-                        // Right side subtle glow line
+                        // Right side solid border matching Web
                         Box(
                             modifier = Modifier
                                 .fillMaxHeight()
                                 .width(1.dp)
                                 .align(Alignment.CenterEnd)
-                                .background(
-                                    Brush.verticalGradient(
-                                        listOf(Color.Transparent, Gold.copy(alpha = 0.2f), Color.Transparent)
-                                    )
-                                )
+                                .background(sidebarBorderColor)
                         )
 
                         Column(
@@ -254,42 +320,35 @@ fun MainScreen() {
                                 .padding(vertical = 32.dp),
                             horizontalAlignment = Alignment.Start
                         ) {
-                            // Logo Section
-                            Box(
+                            // Logo Section - Column layout matching Web
+                            Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(bottom = 48.dp),
-                                contentAlignment = Alignment.Center
+                                    .padding(bottom = 40.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.Center,
-                                    modifier = Modifier.padding(horizontal = 16.dp)
+                                Box(
+                                    modifier = Modifier.size(logoSize),
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    Surface(
-                                        shape = CircleShape,
-                                        colors = SurfaceDefaults.colors(containerColor = Color.Transparent),
-                                        modifier = Modifier.size(48.dp)
-                                    ) {
-                                        Image(
-                                            painter = painterResource(id = R.drawable.logo),
-                                            contentDescription = "Logo",
-                                            modifier = Modifier.fillMaxSize().padding(4.dp)
-                                        )
-                                    }
+                                    Image(
+                                        painter = painterResource(id = R.drawable.logo),
+                                        contentDescription = "Logo",
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
 
-                                    androidx.compose.animation.AnimatedVisibility(
-                                        visible = isSidebarFocused,
-                                        enter = fadeIn(animationSpec = tween(150)) + expandHorizontally(animationSpec = tween(150)),
-                                        exit = fadeOut(animationSpec = tween(100)) + shrinkHorizontally(animationSpec = tween(100))
-                                    ) {
-                                        Spacer(modifier = Modifier.width(12.dp))
-                                        Image(
-                                            painter = painterResource(id = R.drawable.brand_text),
-                                            contentDescription = "Cine 3 Estrellas",
-                                            modifier = Modifier.height(28.dp)
-                                        )
-                                    }
+                                if (brandTextHeight > 0.dp) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Image(
+                                        painter = painterResource(id = R.drawable.brand_text),
+                                        contentDescription = "Cine 3 Estrellas",
+                                        modifier = Modifier
+                                            .height(brandTextHeight)
+                                            .offset(y = brandTextOffsetY)
+                                            .alpha(brandTextOpacity)
+                                    )
                                 }
                             }
 
@@ -297,16 +356,24 @@ fun MainScreen() {
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 12.dp),
+                                    .padding(horizontal = 12.dp)
+                                    .focusProperties {
+                                        enter = { tabFocusRequesters[selectedTab] }
+                                    },
                                 verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
                                 tabs.forEachIndexed { index, title ->
                                     val isSelected = selectedTab == index
                                     var isItemFocused by remember { mutableStateOf(false) }
 
-                                    val itemAlpha by animateFloatAsState(
-                                        targetValue = if (isSelected || isItemFocused) 1f else 0.6f,
-                                        label = "itemAlpha"
+                                    val animatedItemColor by animateColorAsState(
+                                        targetValue = when {
+                                            isSelected -> Gold
+                                            isItemFocused -> Color.White
+                                            else -> Color.White.copy(alpha = 0.3f)
+                                        },
+                                        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+                                        label = "animatedItemColor"
                                     )
 
                                     Surface(
@@ -328,31 +395,38 @@ fun MainScreen() {
                                                     right = exploreFocusRequester
                                                 }
                                             },
-                                        scale = SelectableSurfaceDefaults.scale(focusedScale = 1.05f),
+                                        scale = SelectableSurfaceDefaults.scale(focusedScale = 1.02f),
                                         colors = SelectableSurfaceDefaults.colors(
                                             containerColor = Color.Transparent,
-                                            focusedContainerColor = Gold,
-                                            selectedContainerColor = Gold.copy(alpha = 0.15f),
-                                            focusedSelectedContainerColor = Gold
+                                            focusedContainerColor = Color.Transparent,
+                                            selectedContainerColor = Color.Transparent,
+                                            focusedSelectedContainerColor = Color.Transparent
                                          ),
                                         glow = SelectableSurfaceDefaults.glow(
-                                            focusedGlow = Glow(Gold.copy(alpha = 0.15f), 20.dp)
+                                            focusedGlow = Glow.None
                                         ),
-                                        shape = SelectableSurfaceDefaults.shape(RoundedCornerShape(16.dp))
+                                        shape = SelectableSurfaceDefaults.shape(RoundedCornerShape(12.dp))
                                     ) {
                                         Box(modifier = Modifier.fillMaxSize()) {
-                                            // Selected Indicator (left bar)
+                                            // Selected Indicator (left bar) matching Web
                                             androidx.compose.animation.AnimatedVisibility(
                                                 visible = isSelected,
-                                                enter = fadeIn() + expandVertically(),
-                                                exit = fadeOut() + shrinkVertically(),
+                                                enter = fadeIn(tween(300)) + expandVertically(tween(300)),
+                                                exit = fadeOut(tween(300)) + shrinkVertically(tween(300)),
                                                 modifier = Modifier.align(Alignment.CenterStart)
                                             ) {
                                                 Box(
                                                     modifier = Modifier
-                                                        .width(4.dp)
-                                                        .height(24.dp)
-                                                        .clip(RoundedCornerShape(2.dp))
+                                                        .width(3.dp)
+                                                        .height(16.dp)
+                                                        .clip(
+                                                            RoundedCornerShape(
+                                                                topStart = 0.dp,
+                                                                bottomStart = 0.dp,
+                                                                topEnd = 4.dp,
+                                                                bottomEnd = 4.dp
+                                                            )
+                                                        )
                                                         .background(Gold)
                                                 )
                                             }
@@ -366,28 +440,25 @@ fun MainScreen() {
                                                 Icon(
                                                     icons[index],
                                                     contentDescription = title,
-                                                    tint = if (isItemFocused) Color.Black else if (isSelected) Gold else Color.White,
-                                                    modifier = Modifier
-                                                        .size(28.dp)
-                                                        .alpha(itemAlpha)
+                                                    tint = animatedItemColor,
+                                                    modifier = Modifier.size(28.dp)
                                                 )
 
-                                                androidx.compose.animation.AnimatedVisibility(
-                                                    visible = isSidebarFocused,
-                                                    enter = fadeIn(animationSpec = tween(150)) + slideInHorizontally(animationSpec = tween(150)),
-                                                    exit = fadeOut(animationSpec = tween(100)) + slideOutHorizontally(animationSpec = tween(100))
-                                                ) {
-                                                    Row {
-                                                        Spacer(modifier = Modifier.width(20.dp))
-                                                        Text(
-                                                            text = title,
-                                                            style = MaterialTheme.typography.titleMedium,
-                                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                                            color = if (isItemFocused) Color.Black else if (isSelected) Gold else Color.White,
-                                                            modifier = Modifier.alpha(itemAlpha)
-                                                        )
-                                                    }
-                                                }
+                                                Spacer(modifier = Modifier.width(20.dp))
+
+                                                Text(
+                                                    text = title,
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = animatedItemColor,
+                                                    maxLines = 1,
+                                                    softWrap = false,
+                                                    modifier = Modifier
+                                                        .graphicsLayer {
+                                                            alpha = labelAlpha
+                                                            translationX = labelTranslationX.toPx()
+                                                        }
+                                                )
                                             }
                                         }
                                     }
@@ -397,14 +468,16 @@ fun MainScreen() {
                             Spacer(modifier = Modifier.weight(1f))
 
                             // Bottom Version info
-                            if (isSidebarFocused) {
-                               Text(
-                                   text = "v1.0.4",
-                                   style = MaterialTheme.typography.labelSmall,
-                                   color = Color.White.copy(alpha = 0.3f),
-                                   modifier = Modifier.padding(start = 24.dp, bottom = 16.dp)
-                               )
-                            }
+                            Text(
+                                text = "v1.0.4",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White.copy(alpha = 0.3f),
+                                modifier = Modifier
+                                    .padding(start = 24.dp, bottom = 16.dp)
+                                    .graphicsLayer {
+                                        alpha = labelAlpha
+                                    }
+                            )
                         }
                     }
                 }

@@ -467,9 +467,28 @@ fun MovieDetailsScreen(
                             Spacer(modifier = Modifier.height(24.dp))
 
                             if (!m.genres.isNullOrEmpty()) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(text = "GÉNEROS: ", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = Gold)
-                                    Text(text = m.genres!!.joinToString(" • ") { it.name }, style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.7f))
+                                Box(
+                                    modifier = Modifier
+                                        .background(Color(0x4D000000), RoundedCornerShape(8.dp))
+                                        .padding(vertical = 6.dp, horizontal = 12.dp)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = "GÉNEROS:",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Gold,
+                                            fontSize = 13.sp
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Text(
+                                            text = m.genres!!.joinToString(" • ") { it.name },
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium,
+                                            color = Color(0xFF9CA3AF),
+                                            fontSize = 14.sp
+                                        )
+                                    }
                                 }
                             }
 
@@ -487,8 +506,13 @@ fun MovieDetailsScreen(
                                     animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
                                     label = "scale"
                                 )
+                                val reproducirAlpha by animateFloatAsState(
+                                    targetValue = if (isReproducirFocused) 1f else 0.6f,
+                                    animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+                                    label = "alpha"
+                                )
                                 val reproducirContentColor by animateColorAsState(
-                                    targetValue = if (isReproducirFocused) Color(0xFF3A3000) else Color(0xFFD0C6AB).copy(alpha = 0.8f),
+                                    targetValue = if (isReproducirFocused) Color(0xFF3A3000) else Color.Black,
                                     animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
                                     label = "color"
                                 )
@@ -506,11 +530,12 @@ fun MovieDetailsScreen(
                                         .graphicsLayer {
                                             scaleX = reproducirScale
                                             scaleY = reproducirScale
+                                            alpha = reproducirAlpha
                                         }
                                         .requiredWidth(180.dp)
                                         .requiredHeight(52.dp),
                                     colors = ButtonDefaults.colors(
-                                        containerColor = Color(0xFFE0E0E0),
+                                        containerColor = Color.White.copy(alpha = 0.9f),
                                         contentColor = reproducirContentColor,
                                         focusedContainerColor = Color.Transparent,
                                         focusedContentColor = reproducirContentColor
@@ -541,60 +566,91 @@ fun MovieDetailsScreen(
                                 }
                                 Spacer(modifier = Modifier.width(16.dp))
 
+                                val isFavorite = remember(m, DataCache.currentUser) {
+                                    DataCache.currentUser?.favorites?.any { it.id == m.id } == true
+                                }
+
                                 var isFavoritosFocused by remember { mutableStateOf(false) }
                                 val favoritosScale by animateFloatAsState(
-                                    targetValue = if (isFavoritosFocused) 1.1f else 1.0f,
-                                    animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
-                                    label = "scale"
-                                )
-                                val favoritosContentColor by animateColorAsState(
-                                    targetValue = if (isFavoritosFocused) Color(0xFF3A3000) else Color(0xFFD0C6AB).copy(alpha = 0.8f),
-                                    animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
-                                    label = "color"
-                                )
+                                     targetValue = if (isFavoritosFocused) 1.1f else 1.0f,
+                                     animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+                                     label = "scale"
+                                 )
+                                 val favoritosContentColor by animateColorAsState(
+                                     targetValue = if (isFavoritosFocused) Color(0xFF3A3000) else if (isFavorite) Gold else Color(0xFFD0C6AB).copy(alpha = 0.8f),
+                                     animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+                                     label = "color"
+                                 )
 
-                                Button(
-                                    onClick = { /* Add to favorites */ },
-                                    modifier = Modifier
-                                        .onFocusChanged { isFavoritosFocused = it.isFocused }
-                                        .focusProperties { up = FocusRequester.Cancel }
-                                        .zIndex(if (isFavoritosFocused) 1f else 0f)
-                                        .graphicsLayer {
-                                            scaleX = favoritosScale
-                                            scaleY = favoritosScale
-                                        }
-                                        .requiredWidth(180.dp)
-                                        .requiredHeight(52.dp),
-                                    colors = ButtonDefaults.colors(
-                                        containerColor = Color.White.copy(alpha = 0.1f),
-                                        contentColor = favoritosContentColor,
-                                        focusedContainerColor = Color.Transparent,
-                                        focusedContentColor = favoritosContentColor
-                                    ),
-                                    scale = ButtonDefaults.scale(focusedScale = 1.0f),
-                                    glow = ButtonDefaults.glow(focusedGlow = Glow(Color(0xFFFFD700).copy(alpha = 0.4f), 10.dp)),
-                                    shape = ButtonDefaults.shape(RoundedCornerShape(6.dp)),
-                                    contentPadding = PaddingValues(0.dp)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .then(
-                                                if (isFavoritosFocused) Modifier.background(
-                                                    Brush.linearGradient(
-                                                        colors = listOf(Color(0xFFFFF6DF), Color(0xFFFFD700))
-                                                    )
-                                                ) else Modifier
-                                            ),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.FavoriteBorder, contentDescription = null, modifier = Modifier.size(24.dp), tint = favoritosContentColor)
-                                            Spacer(modifier = Modifier.width(12.dp))
-                                            Text("Favoritos", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = favoritosContentColor)
-                                        }
-                                    }
-                                }
+                                 Button(
+                                     onClick = {
+                                         val user = DataCache.currentUser
+                                         if (user != null) {
+                                             scope.launch {
+                                                 val newFavorites = if (isFavorite) {
+                                                     user.favorites.filter { it.id != m.id }
+                                                 } else {
+                                                     user.favorites + FavoriteItem(id = m.id, title = m.title)
+                                                 }
+                                                 val updatedUser = user.copy(favorites = newFavorites)
+                                                 val savedUser = SupabaseManager.upsertUser(updatedUser)
+                                                 if (savedUser != null) {
+                                                     DataCache.currentUser = savedUser
+                                                 }
+                                                 
+                                                 val eventName = if (isFavorite) "💔 Unlike" else "❤️ Like"
+                                                 SupabaseManager.logEvent(
+                                                     DbEvent(
+                                                         user_id = user.telegramId,
+                                                         first_name = user.firstName,
+                                                         event_name = eventName,
+                                                         movie_id = m.id.toLong(),
+                                                         movie_title = m.title
+                                                     )
+                                                 )
+                                             }
+                                         }
+                                     },
+                                     modifier = Modifier
+                                         .onFocusChanged { isFavoritosFocused = it.isFocused }
+                                         .focusProperties { up = FocusRequester.Cancel }
+                                         .zIndex(if (isFavoritosFocused) 1f else 0f)
+                                         .graphicsLayer {
+                                             scaleX = favoritosScale
+                                             scaleY = favoritosScale
+                                         }
+                                         .requiredSize(52.dp),
+                                     colors = ButtonDefaults.colors(
+                                         containerColor = Color.White.copy(alpha = 0.1f),
+                                         contentColor = favoritosContentColor,
+                                         focusedContainerColor = Color.Transparent,
+                                         focusedContentColor = favoritosContentColor
+                                     ),
+                                     scale = ButtonDefaults.scale(focusedScale = 1.0f),
+                                     glow = ButtonDefaults.glow(focusedGlow = Glow(Color(0xFFFFD700).copy(alpha = 0.4f), 10.dp)),
+                                     shape = ButtonDefaults.shape(CircleShape),
+                                     contentPadding = PaddingValues(0.dp)
+                                 ) {
+                                     Box(
+                                         modifier = Modifier
+                                             .fillMaxSize()
+                                             .then(
+                                                 if (isFavoritosFocused) Modifier.background(
+                                                     Brush.linearGradient(
+                                                         colors = listOf(Color(0xFFFFF6DF), Color(0xFFFFD700))
+                                                     )
+                                                 ) else Modifier
+                                             ),
+                                         contentAlignment = Alignment.Center
+                                     ) {
+                                         Icon(
+                                             imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder,
+                                             contentDescription = if (isFavorite) "Quitar de Favoritos" else "Agregar a Favoritos",
+                                             modifier = Modifier.size(24.dp),
+                                             tint = favoritosContentColor
+                                         )
+                                     }
+                                 }
                             }
                         }
 

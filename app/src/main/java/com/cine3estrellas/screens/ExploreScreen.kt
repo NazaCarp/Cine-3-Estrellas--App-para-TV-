@@ -436,6 +436,17 @@ fun ExploreScreen(onMovieClick: (Int) -> Unit) {
                         }
                     } else if (movies.isNotEmpty()) {
                         // Actual Results Grid
+                        val focusRequesters = remember { 
+                            val list = mutableStateListOf<FocusRequester>()
+                            repeat(movies.size) { list.add(FocusRequester()) }
+                            list
+                        }
+                        LaunchedEffect(movies.size) {
+                            while (focusRequesters.size < movies.size) {
+                                focusRequesters.add(FocusRequester())
+                            }
+                        }
+                        
                         LazyVerticalGrid(
                             columns = GridCells.Adaptive(itemWidth),
                             horizontalArrangement = Arrangement.spacedBy(spacing),
@@ -457,11 +468,9 @@ fun ExploreScreen(onMovieClick: (Int) -> Unit) {
                                     onClick = { onMovieClick(movie.id) }, 
                                     cardWidth = itemWidth,
                                     screenKey = "explore",
-                                    modifier = if (isFirstInColumn) {
-                                        Modifier.focusProperties {
-                                            left = exploreFocusRequester ?: FocusRequester.Default
-                                        }
-                                    } else Modifier
+                                    focusRequester = if (index < focusRequesters.size) focusRequesters[index] else remember { FocusRequester() },
+                                    nextFocusRequester = if (index < focusRequesters.size - 1) focusRequesters[index + 1] else null,
+                                    leftFocus = if (isFirstInColumn) exploreFocusRequester else null
                                 )
                             }
                             

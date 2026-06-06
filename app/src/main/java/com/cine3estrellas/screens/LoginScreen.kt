@@ -264,17 +264,30 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
                                 isLoading = true
                                 errorMessage = null
                                 scope.launch {
-                                    val isMember = TelegramManager.checkGroupMembership(telegramId)
-                                    if (isMember) {
-                                        val user = TelegramManager.getUserInfo(telegramId)
-                                        if (user != null) {
-                                            DataCache.saveSession(context, user)
-                                            onLoginSuccess()
+                                    val user = SupabaseManager.findUserByAuthCode(telegramId)
+                                    if (user != null) {
+                                        if (!SupabaseManager.isCodeExpired(user.authCodeExpiresAt)) {
+                                            val isMember = TelegramManager.checkGroupMembership(user.telegramId.toString())
+                                            if (isMember) {
+                                                // Register/fetch user in Supabase
+                                                val savedUser = SupabaseManager.syncUser(context, user)
+                                                if (savedUser != null) {
+                                                    // Clear the code after successful login
+                                                    SupabaseManager.clearAuthCode(user.telegramId)
+                                                    
+                                                    DataCache.saveSession(context, savedUser)
+                                                    onLoginSuccess()
+                                                } else {
+                                                    errorMessage = "Error al sincronizar datos del servidor."
+                                                }
+                                            } else {
+                                                errorMessage = "Debes unirte al grupo @Cine_3Estrellas para ingresar."
+                                            }
                                         } else {
-                                            errorMessage = "Error al obtener información de usuario."
+                                            errorMessage = "El código ha expirado. Genera uno nuevo en el bot."
                                         }
                                     } else {
-                                        errorMessage = "Debes unirte al grupo @Cine_3Estrellas para ingresar."
+                                        errorMessage = "Código de acceso inválido."
                                     }
                                     isLoading = false
                                 }

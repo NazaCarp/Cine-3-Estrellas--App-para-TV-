@@ -4,6 +4,11 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.border
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import com.cine3estrellas.R
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -407,10 +412,125 @@ fun SearchScreen(onMovieClick: (Int) -> Unit) {
                     Text("Buscando...", color = Gold, style = MaterialTheme.typography.headlineSmall)
                 }
             } else if (searchResults.isEmpty() && lastSearchedQuery.isNotEmpty() && !isLoading) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No se encontraron resultados", color = Color.Gray)
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .width(420.dp)
+                            .wrapContentHeight()
+                            .background(
+                                brush = Brush.verticalGradient(
+                                    colors = listOf(
+                                        Color(0xFF1E1E24),
+                                        Color(0xFF121216)
+                                    )
+                                ),
+                                shape = RoundedCornerShape(24.dp)
+                            )
+                            .border(
+                                width = 1.dp,
+                                brush = Brush.linearGradient(
+                                    colors = listOf(
+                                        Color.White.copy(alpha = 0.15f),
+                                        Gold.copy(alpha = 0.4f),
+                                        Color.White.copy(alpha = 0.05f)
+                                    )
+                                ),
+                                shape = RoundedCornerShape(24.dp)
+                            )
+                            .padding(horizontal = 32.dp, vertical = 28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .background(Gold.copy(alpha = 0.15f), RoundedCornerShape(50.dp))
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = "¡PEDIDOS DISPONIBLES!",
+                                style = TextStyle(
+                                    fontSize = 10.sp,
+                                    color = Gold,
+                                    fontWeight = FontWeight.Black,
+                                    letterSpacing = 0.2.em
+                                )
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        Text(
+                            text = "No encontramos \"$lastSearchedQuery\"",
+                            style = TextStyle(
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                letterSpacing = 0.5.sp
+                            ),
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Text(
+                            text = "Escanea el código para pedirla en el grupo",
+                            style = TextStyle(
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Color.White.copy(alpha = 0.6f),
+                                letterSpacing = 0.2.sp
+                            ),
+                            textAlign = TextAlign.Center
+                        )
+
+                        Spacer(modifier = Modifier.height(24.dp))
+
+                        Box(
+                            modifier = Modifier
+                                .size(160.dp)
+                                .background(Color.White, RoundedCornerShape(20.dp))
+                                .border(
+                                    width = 3.dp,
+                                    color = Gold,
+                                    shape = RoundedCornerShape(20.dp)
+                                )
+                                .padding(12.dp)
+                        ) {
+                            Image(
+                                painter = painterResource(id = R.drawable.cine_3_estrellas_grupo),
+                                contentDescription = "QR Telegram Grupo",
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        Text(
+                            text = "GRUPO OFICIAL DE TELEGRAM",
+                            style = TextStyle(
+                                fontSize = 9.sp,
+                                color = Color.White.copy(alpha = 0.4f),
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 0.2.em
+                            )
+                        )
+                    }
                 }
             } else {
+                val focusRequesters = remember { 
+                    val list = mutableStateListOf<FocusRequester>()
+                    repeat(searchResults.size) { list.add(FocusRequester()) }
+                    list
+                }
+                LaunchedEffect(searchResults.size) {
+                    while (focusRequesters.size < searchResults.size) {
+                        focusRequesters.add(FocusRequester())
+                    }
+                }
+                
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(110.dp),
                     modifier = Modifier.fillMaxWidth(),
@@ -426,7 +546,9 @@ fun SearchScreen(onMovieClick: (Int) -> Unit) {
                         MovieCard(
                             movie = movie, 
                             onClick = { onMovieClick(movie.id) },
-                            screenKey = "search"
+                            screenKey = "search",
+                            focusRequester = if (index < focusRequesters.size) focusRequesters[index] else remember { FocusRequester() },
+                            nextFocusRequester = if (index < focusRequesters.size - 1) focusRequesters[index + 1] else null
                         )
                     }
                 }

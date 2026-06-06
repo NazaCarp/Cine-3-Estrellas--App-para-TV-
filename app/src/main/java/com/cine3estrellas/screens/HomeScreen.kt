@@ -22,7 +22,18 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.animation.core.*
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
+import com.cine3estrellas.R
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.tv.material3.*
 import com.cine3estrellas.*
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -30,11 +41,13 @@ import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.query.Columns
 import io.github.jan.supabase.postgrest.query.Count
 import io.github.jan.supabase.postgrest.query.Order
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayArrow
 
 // Using DataCache instead of local HomeCache
 
@@ -51,8 +64,46 @@ fun HomeScreen(onMovieClick: (Int) -> Unit, onSeeMoreClick: (String) -> Unit) {
     val loadingFocusRequester = remember { FocusRequester() }
     val heroFocusRequester = remember { FocusRequester() }
 
+    // Pulse animation for loading logo
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 0.95f,
+        targetValue = 1.05f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseScale"
+    )
+
     // Track if we've already handled the initial focus for this session
     var initialFocusRequested by rememberSaveable { mutableStateOf(false) }
+
+    var historyMovies by remember { mutableStateOf(emptyList<Movie>()) }
+    val historyIds = remember(DataCache.currentUser) {
+        val watch = DataCache.currentUser?.watchHistory ?: emptyList()
+        val hidden = DataCache.currentUser?.hiddenHistory ?: emptyList()
+        watch.filter { it !in hidden }
+    }
+
+    LaunchedEffect(historyIds) {
+        if (historyIds.isEmpty()) {
+            historyMovies = emptyList()
+            return@LaunchedEffect
+        }
+        try {
+            val response = SupabaseManager.client.from("movies")
+                .select {
+                    filter {
+                        isIn("id", historyIds)
+                    }
+                }.decodeList<Movie>()
+            val ordered = historyIds.mapNotNull { id -> response.find { it.id == id } }
+            historyMovies = ordered
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
 
     fun loadHomeData() {
         errorMessage = null
@@ -60,86 +111,32 @@ fun HomeScreen(onMovieClick: (Int) -> Unit, onSeeMoreClick: (String) -> Unit) {
             if (DataCache.isHomeInitialLoaded) return@launch
 
             try {
-                // 1. Fetch Categories list
-                val fetchedCategories = SupabaseManager.client.from("home_categories")
-                    .select {
-                        filter { eq("show_in_home", true) }
-                    }.decodeList<HomeCategory>()
-
-                // 2. Fetch the 50 newest movies to determine category freshness
-                val recentMovies = SupabaseManager.client.from("movies")
-                    .select {
-                        order("created_at", io.github.jan.supabase.postgrest.query.Order.DESCENDING)
-                        limit(50)
-                    }.decodeList<Movie>()
-
-                // 3. Separate fixed categories from dynamic ones
-                val fixedFirst = fetchedCategories.find { it.name.equals("Recién Agregadas", ignoreCase = true) }
-                val fixedSecond = fetchedCategories.find { it.name.equals("Lo más visto", ignoreCase = true) }
-                val fixedSixth = fetchedCategories.find { it.name.equals("Más Valoradas", ignoreCase = true) }
-
-                val remainingCategories = fetchedCategories.filter {
-                    it.id != fixedFirst?.id && it.id != fixedSecond?.id && it.id != fixedSixth?.id
+                val response = SupabaseManager.fetchTvHomeData()
+                if (response == null || response.categories.isEmpty()) {
+                    throw Exception("El servidor no devolvió datos válidos.")
                 }
 
-                // Rank remaining categories by their newest movie date
-                val dynamicSorted = remainingCategories.map { category ->
-                    val newestMovieInCategory = recentMovies.firstOrNull { movie ->
-                        val matchGenre = !category.genre_ids.isNullOrEmpty() &&
-                                movie.genre_ids?.any { it in category.genre_ids!! } ?: false
-                        val matchKeyword = !category.keywords.isNullOrEmpty() &&
-                                movie.keywords?.any { it in category.keywords!! } ?: false
-                        matchGenre || matchKeyword
-                    }
-                    category to (newestMovieInCategory?.created_at ?: "1900-01-01")
-                }.sortedByDescending { it.second }.map { it.first }.toMutableList()
-
-                // Reassemble the list with fixed positions
-                val finalCategories = mutableListOf<HomeCategory>()
-
-                // 1st position
-                fixedFirst?.let { finalCategories.add(it) }
-
-                // 2nd position
-                fixedSecond?.let { finalCategories.add(it) }
-
-                // Positions 3, 4, 5 from dynamic content
-                repeat(3) {
-                    if (dynamicSorted.isNotEmpty()) finalCategories.add(dynamicSorted.removeAt(0))
+                DataCache.homeHeroMovies = response.heroMovies
+                DataCache.homeCategories = response.categories.map { tvCat ->
+                    HomeCategory(
+                        id = tvCat.id,
+                        name = tvCat.name,
+                        icon = tvCat.icon,
+                        order = tvCat.order,
+                        show_in_home = tvCat.show_in_home,
+                        genre_ids = tvCat.genre_ids,
+                        keywords = tvCat.keywords,
+                        min_rating = tvCat.min_rating,
+                        sort_by = tvCat.sort_by
+                    )
                 }
-
-                // 6th position
-                fixedSixth?.let { finalCategories.add(it) }
-
-                // Remaining dynamic content
-                finalCategories.addAll(dynamicSorted)
-
-                DataCache.homeCategories = finalCategories
-
-                // 4. Fetch movies for Hero
-                val baseHeroMovies = recentMovies.take(7)
-
-                // 3. Fetch TMDB details ONLY for the hero section (happens once)
-                val detailedHeroMovies = coroutineScope {
-                    baseHeroMovies.map { movie ->
-                        async {
-                            try {
-                                val details = TmdbManager.getMovieDetails(movie.id)
-                                movie.copy(
-                                    overview = details?.overview ?: movie.overview,
-                                    runtime = details?.runtime ?: movie.runtime,
-                                    genres = details?.genres ?: movie.genres,
-                                    backdrop_path = details?.backdrop_path ?: movie.backdrop_path,
-                                    vote_average = details?.vote_average ?: movie.vote_average,
-                                    original_language = details?.original_language ?: movie.original_language
-                                )
-                            } catch (e: Exception) {
-                                movie
-                            }
-                        }
-                    }.awaitAll()
+                response.categories.forEach { tvCat ->
+                    DataCache.homeCategoryMovies[tvCat.id] = tvCat.movies
+                    // Use the exact count from the server (Supabase COUNT query).
+                    // Fallback to movie list size only if the server didn't return a count.
+                    val count = tvCat.total_count ?: tvCat.movies.size.toLong()
+                    DataCache.homeCategoryTotalCounts[tvCat.id] = count
                 }
-                DataCache.homeHeroMovies = detailedHeroMovies
                 DataCache.isHomeInitialLoaded = true
             } catch (e: Exception) {
                 val techMsg = e.message ?: ""
@@ -170,7 +167,37 @@ fun HomeScreen(onMovieClick: (Int) -> Unit, onSeeMoreClick: (String) -> Unit) {
                 .focusable(),
             contentAlignment = androidx.compose.ui.Alignment.Center
         ) {
-            Text("Conectando...", color = Gold, style = MaterialTheme.typography.headlineSmall)
+            Column(
+                horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Image(
+                    painter = painterResource(id = R.drawable.logo),
+                    contentDescription = "Cine 3 Estrellas Logo",
+                    modifier = Modifier
+                        .size(100.dp)
+                        .graphicsLayer {
+                            scaleX = pulseScale
+                            scaleY = pulseScale
+                        }
+                )
+                Spacer(modifier = Modifier.height(24.dp))
+                CircularProgressIndicator(
+                    color = Gold,
+                    strokeWidth = 3.dp,
+                    modifier = Modifier.size(36.dp)
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "CONECTANDO CON EL SERVIDOR",
+                    style = TextStyle(
+                        fontSize = 10.sp,
+                        color = Color.White.copy(alpha = 0.6f),
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 0.2.em
+                    )
+                )
+            }
         }
     } else {
         val listState = rememberLazyListState()
@@ -233,6 +260,16 @@ fun HomeScreen(onMovieClick: (Int) -> Unit, onSeeMoreClick: (String) -> Unit) {
                 }
             }
 
+            if (historyMovies.isNotEmpty()) {
+                item(key = "history_section") {
+                    HistoryRow(
+                        movies = historyMovies,
+                        onMovieClick = onMovieClick,
+                        parentListState = listState
+                    )
+                }
+            }
+
             itemsIndexed(
                 items = DataCache.homeCategories,
                 key = { _, category -> category.id }
@@ -274,36 +311,27 @@ fun CategoryRow(
     // This state tracks if we should force focus to the first item on the next entry
     var isFirstEntry by remember(isVisible) { mutableStateOf(true) }
 
+    var isRowFocused by remember { mutableStateOf(false) }
+    val titleScale by animateFloatAsState(
+        targetValue = if (isRowFocused) 1.1f else 1.0f,
+        animationSpec = tween(200, easing = FastOutSlowInEasing),
+        label = "category_title_scale"
+    )
+
     LaunchedEffect(isVisible) {
         if (!isVisible && rowState.firstVisibleItemIndex > 0) {
             rowState.scrollToItem(0)
         }
     }
 
-    // Calculate which IDs are already shown in PREVIOUS ROWS ONLY (Ignore Hero)
-    val alreadyShownInRows = remember(DataCache.homeCategoryMovies.size) {
-        val ids = mutableSetOf<Int>()
-        for (i in 0 until rowIndex) {
-            val prevCatId = DataCache.homeCategories.getOrNull(i)?.id
-            if (prevCatId != null) {
-                DataCache.homeCategoryMovies[prevCatId]?.forEach { ids.add(it.id) }
-            }
-        }
-        ids
-    }
+    // Each category shows its own movies directly — no cross-row dedup.
+    // (Deduplication was causing categories lower in the list to show 0–2 movies
+    // because earlier rows had already consumed the shared pool.)
+    val displayMovies = remember(rawMovies) { rawMovies.take(15) }
 
-    // Filter the movies for this row
-    val filteredMovies = remember(rawMovies, alreadyShownInRows) {
-        rawMovies.filter { it.id !in alreadyShownInRows }
-    }
-
-    val displayMovies = remember(filteredMovies) {
-        filteredMovies.take(15)
-    }
-
-    val remainingCount = remember(filteredMovies, displayMovies, DataCache.homeCategoryTotalCounts[category.id]) {
-        val totalAvailable = DataCache.homeCategoryTotalCounts[category.id] ?: filteredMovies.size.toLong()
-        (totalAvailable - displayMovies.size).coerceAtLeast(0).toInt()
+    val remainingCount = remember(rawMovies, DataCache.homeCategoryTotalCounts[category.id]) {
+        val total = DataCache.homeCategoryTotalCounts[category.id] ?: rawMovies.size.toLong()
+        (total - displayMovies.size).coerceAtLeast(0).toInt()
     }
 
     // Only fetch movies for this category if they are not already cached
@@ -346,7 +374,7 @@ fun CategoryRow(
         }
     }
 
-    if (displayMovies.isNotEmpty() || (rawMovies.isEmpty())) {
+    if (displayMovies.isNotEmpty() || rawMovies.isEmpty()) {
         Column(
             modifier = Modifier
                 .padding(vertical = 16.dp)
@@ -358,18 +386,47 @@ fun CategoryRow(
                     }
                 }
         ) {
-            Text(
-                text = category.name,
-                style = MaterialTheme.typography.headlineSmall,
-                modifier = Modifier.padding(start = 48.dp, bottom = 8.dp),
-                color = Gold
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .padding(start = 48.dp, bottom = 6.dp)
+                    .graphicsLayer {
+                        scaleX = titleScale
+                        scaleY = titleScale
+                        transformOrigin = TransformOrigin(0f, 0.5f)
+                    }
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(4.dp)
+                        .height(18.dp)
+                        .background(
+                            brush = Brush.verticalGradient(
+                                colors = listOf(
+                                    Color(0xFFFFF2AF),
+                                    Gold
+                                )
+                            ),
+                            shape = RoundedCornerShape(2.dp)
+                        )
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = category.name.uppercase(),
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 1.2.sp
+                    ),
+                    color = Color.White
+                )
+            }
             LazyRow(
                 state = rowState,
-                contentPadding = PaddingValues(horizontal = 48.dp),
+                contentPadding = PaddingValues(start = 48.dp, end = 48.dp, top = 4.dp, bottom = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 modifier = Modifier
                     .onFocusChanged { 
+                        isRowFocused = it.hasFocus
                         if (it.hasFocus) {
                             onFocusGained()
                             isFirstEntry = false // Memory mode active until it leaves screen
@@ -402,6 +459,90 @@ fun CategoryRow(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
+@Composable
+fun HistoryRow(
+    movies: List<Movie>,
+    onMovieClick: (Int) -> Unit,
+    parentListState: LazyListState
+) {
+    val rowState = rememberLazyListState()
+    val firstItemRequester = remember { FocusRequester() }
+    var isFirstEntry by remember { mutableStateOf(true) }
+
+    var isRowFocused by remember { mutableStateOf(false) }
+    val titleScale by animateFloatAsState(
+        targetValue = if (isRowFocused) 1.1f else 1.0f,
+        animationSpec = tween(200, easing = FastOutSlowInEasing),
+        label = "history_title_scale"
+    )
+
+    Column(
+        modifier = Modifier
+            .padding(vertical = 16.dp)
+            .focusProperties {
+                enter = {
+                    if (isFirstEntry) firstItemRequester else FocusRequester.Default
+                }
+            }
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .padding(start = 48.dp, bottom = 6.dp)
+                .graphicsLayer {
+                    scaleX = titleScale
+                    scaleY = titleScale
+                    transformOrigin = TransformOrigin(0f, 0.5f)
+                }
+        ) {
+            Icon(
+                imageVector = Icons.Default.PlayArrow,
+                contentDescription = null,
+                tint = Color(0xFF60A5FA),
+                modifier = Modifier.size(14.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "CONTINUAR VIENDO",
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 2.sp
+                ),
+                color = Color(0xFF60A5FA)
+            )
+        }
+        
+        LazyRow(
+            state = rowState,
+            contentPadding = PaddingValues(start = 48.dp, end = 48.dp, top = 4.dp, bottom = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            modifier = Modifier
+                .onFocusChanged {
+                    isRowFocused = it.hasFocus
+                    if (it.hasFocus) {
+                        isFirstEntry = false
+                    }
+                }
+        ) {
+            itemsIndexed(
+                items = movies,
+                key = { _, movie -> "history_${movie.id}" }
+            ) { index, movie ->
+                val progressSec = DataCache.currentUser?.watchProgress?.get(movie.id.toString())?.time ?: 0.0
+                HistoryMovieCard(
+                    movie = movie,
+                    progressSec = progressSec,
+                    onClick = { onMovieClick(movie.id) },
+                    isFirstInRow = index == 0,
+                    screenKey = "home_history",
+                    modifier = if (index == 0) Modifier.focusRequester(firstItemRequester) else Modifier
+                )
             }
         }
     }

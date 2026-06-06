@@ -12,6 +12,20 @@ import io.ktor.client.request.parameter
 import io.ktor.client.request.headers
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+
+import android.content.Context
+import kotlinx.serialization.Serializable
+import io.github.jan.supabase.postgrest.from
+
+@Serializable
+data class GeoIpResponse(
+    val ipAddress: String? = null,
+    val countryName: String? = null,
+    val regionName: String? = null,
+    val cityName: String? = null
+)
 
 object SupabaseManager {
     private const val URL = "https://febhxbpcorixullzsfgz.supabase.co"
@@ -19,6 +33,189 @@ object SupabaseManager {
 
     val client: SupabaseClient = createSupabaseClient(URL, KEY) {
         install(Postgrest)
+    }
+
+    private val httpClient = HttpClient {
+        install(ContentNegotiation) {
+            json(Json {
+                ignoreUnknownKeys = true
+                coerceInputValues = true
+            })
+        }
+    }
+
+    suspend fun fetchTvHomeData(): TvHomeResponse? {
+        return try {
+            httpClient.get("${WebConfig.BASE_URL}/api/tv/home").body<TvHomeResponse>()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    suspend fun fetchUser(telegramId: Long): User? {
+        return try {
+            client.from("users").select {
+                filter {
+                    eq("id", telegramId)
+                }
+            }.decodeSingleOrNull<User>()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    suspend fun findUserByAuthCode(code: String): User? {
+        return try {
+            client.from("users").select {
+                filter {
+                    eq("auth_code", code)
+                }
+            }.decodeSingleOrNull<User>()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    fun isCodeExpired(expiresAtStr: String?): Boolean {
+        if (expiresAtStr.isNullOrBlank()) return true
+        return try {
+            val expires = java.time.OffsetDateTime.parse(expiresAtStr)
+            val now = java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC)
+            now.isAfter(expires)
+        } catch (e: Exception) {
+            try {
+                val expires = java.time.Instant.parse(expiresAtStr)
+                val now = java.time.Instant.now()
+                now.isAfter(expires)
+            } catch (e2: Exception) {
+                e2.printStackTrace()
+                true
+            }
+        }
+    }
+
+    suspend fun clearAuthCode(telegramId: Long) {
+        try {
+            val updateData = kotlinx.serialization.json.buildJsonObject {
+                put("auth_code", kotlinx.serialization.json.JsonNull)
+                put("auth_code_expires_at", kotlinx.serialization.json.JsonNull)
+            }
+            client.from("users").update(updateData) {
+                filter {
+                    eq("id", telegramId)
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    suspend fun upsertUser(user: User): User? {
+        return try {
+            client.from("users").upsert(user) {
+                select()
+            }.decodeSingleOrNull<User>()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    suspend fun incrementDailyStats(isNew: Boolean, isUnique: Boolean) {
+        try {
+            client.postgrest.rpc(
+                function = "increment_daily_stats",
+                parameters = buildJsonObject {
+                    put("is_new", isNew)
+                    put("is_unique", isUnique)
+                }
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    suspend fun logEvent(event: DbEvent) {
+        try {
+            client.from("events").insert(event)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun getFormattedTimestamp(): String {
+        return try {
+            val zoneId = java.time.ZoneId.of("America/Argentina/Buenos_Aires")
+            val zonedDateTime = java.time.ZonedDateTime.now(zoneId)
+            val formatter = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:00x")
+            zonedDateTime.format(formatter)
+        } catch (e: Exception) {
+            val now = java.time.Instant.now()
+            java.time.format.DateTimeFormatter.ISO_INSTANT.format(now)
+        }
+    }
+
+    suspend fun syncUser(context: Context, telegramUser: User): User? {
+        val geoData = try {
+            httpClient.get("https://freeipapi.com/api/json").body<GeoIpResponse>()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+
+        val dbUser = fetchUser(telegramUser.telegramId)
+
+        val metrics = context.resources.displayMetrics
+        val screenSize = "${metrics.widthPixels}x${metrics.heightPixels}"
+        val timezone = try {
+            java.util.TimeZone.getDefault().id
+        } catch (e: Exception) {
+            "America/Argentina/Buenos_Aires"
+        }
+
+        val nowIso = getFormattedTimestamp()
+        val updatedUser = User(
+            telegramId = telegramUser.telegramId,
+            firstName = telegramUser.firstName ?: dbUser?.firstName,
+            lastName = telegramUser.lastName ?: dbUser?.lastName,
+            username = telegramUser.username ?: dbUser?.username,
+            languageCode = telegramUser.languageCode ?: dbUser?.languageCode,
+            isPremium = telegramUser.isPremium || (dbUser?.isPremium ?: false),
+            allowsWriteToPm = telegramUser.allowsWriteToPm || (dbUser?.allowsWriteToPm ?: false),
+            platform = "android",
+            version = "v1.0.4",
+            ip = geoData?.ipAddress ?: dbUser?.ip ?: "unknown",
+            country = geoData?.countryName ?: dbUser?.country,
+            province = geoData?.regionName ?: dbUser?.province,
+            city = geoData?.cityName ?: dbUser?.city,
+            timezone = timezone,
+            browser = "Android TV App",
+            screenSize = screenSize,
+            lastSeen = nowIso,
+            totalVisits = dbUser?.totalVisits ?: 0,
+            favorites = dbUser?.favorites ?: emptyList(),
+            watchHistory = dbUser?.watchHistory ?: emptyList(),
+            hiddenHistory = dbUser?.hiddenHistory ?: emptyList(),
+            welcomeSent = dbUser?.welcomeSent ?: false,
+            watchProgress = dbUser?.watchProgress ?: emptyMap()
+        )
+
+        val savedUser = upsertUser(updatedUser) ?: updatedUser
+
+        // Exclude the administrator (5022144726) from stats increment, matching next.js userService.ts
+        val ADMIN_ID = 5022144726L
+        if (telegramUser.telegramId != ADMIN_ID) {
+            val todayStr = java.time.LocalDate.now().toString()
+            val lastSeenStr = dbUser?.lastSeen?.take(10)
+            val isNewUser = dbUser == null
+            val isUniqueToday = isNewUser || lastSeenStr != todayStr
+            incrementDailyStats(isNew = isNewUser, isUnique = isUniqueToday)
+        }
+
+        return savedUser
     }
 }
 
@@ -161,7 +358,15 @@ object VideoExtractor {
     }
 
     suspend fun extractCleanUrl(embedUrl: String): String? {
-        // 1. Si es un enlace de OK.ru, realizamos extracción local directa de HLS/MP4 de alta calidad
+        // 1. Extractor estático local (Dean Edwards packer) — funciona con minochinos.com y callistanise.com
+        if (embedUrl.contains("minochinos.com") || embedUrl.contains("callistanise.com")) {
+            val resolvedUrl = StreamExtractor.extractWithStaticParser(embedUrl)
+            if (resolvedUrl != null) {
+                return resolvedUrl
+            }
+        }
+
+        // 2. Si es un enlace de OK.ru, realizamos extracción local directa de HLS/MP4 de alta calidad
         if (embedUrl.contains("ok.ru") || embedUrl.contains("odnoklassniki")) {
             val result = OkExtractor.extractVideo(embedUrl)
             if (result.isSuccess) {

@@ -51,7 +51,7 @@ object TelegramManager {
             if (response.ok && response.result != null) {
                 val tUser = response.result
                 User(
-                    telegramId = telegramId,
+                    telegramId = telegramId.toLongOrNull() ?: 0L,
                     firstName = tUser.first_name,
                     lastName = tUser.last_name,
                     username = tUser.username,

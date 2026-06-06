@@ -17,12 +17,15 @@ object DataCache {
     var isLoggedIn by mutableStateOf(false)
     var savedIdForLogin by mutableStateOf<String?>(null)
 
+    private const val KEY_LAST_CHECK_TIME = "last_membership_check"
+
     fun saveSession(context: Context, user: User) {
         currentUser = user
         isLoggedIn = true
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putString(KEY_TELEGRAM_ID, user.telegramId)
+            .putString(KEY_TELEGRAM_ID, user.telegramId.toString())
+            .putLong(KEY_LAST_CHECK_TIME, System.currentTimeMillis())
             .apply()
     }
 
@@ -33,6 +36,21 @@ object DataCache {
         return id
     }
 
+    fun shouldCheckMembership(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val lastCheck = prefs.getLong(KEY_LAST_CHECK_TIME, 0L)
+        val now = System.currentTimeMillis()
+        // 24 hours in ms
+        return (now - lastCheck) > 86400000L
+    }
+
+    fun updateMembershipCheckTime(context: Context) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putLong(KEY_LAST_CHECK_TIME, System.currentTimeMillis())
+            .apply()
+    }
+
     fun logout(context: Context) {
         currentUser = null
         isLoggedIn = false
@@ -40,6 +58,7 @@ object DataCache {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .remove(KEY_TELEGRAM_ID)
+            .remove(KEY_LAST_CHECK_TIME)
             .apply()
     }
 

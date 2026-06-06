@@ -36,6 +36,7 @@ import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.MaterialTheme
 import com.cine3estrellas.*
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @SuppressLint("DefaultLocale")
@@ -60,6 +61,7 @@ fun VideoPlayerScreen(movieId: Int, version: String, onBack: () -> Unit) {
     var cleanUrl by remember { mutableStateOf<String?>(null) }
     var isExtracting by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var hasSeeked by remember { mutableStateOf(false) }
 
     // Inicializar ExoPlayer de forma segura con cabeceras HTTP optimizadas para evadir bloqueos
     val player = remember(embedUrl) {
@@ -69,6 +71,8 @@ fun VideoPlayerScreen(movieId: Int, version: String, onBack: () -> Unit) {
         val referer = when {
             embedUrl == null -> null
             embedUrl.contains("ok.ru") || embedUrl.contains("odnoklassniki") -> "https://ok.ru/"
+            embedUrl.contains("minochinos.com") -> "https://minochinos.com/"
+            embedUrl.contains("callistanise.com") -> "https://callistanise.com/"
             embedUrl.contains("vidsonic") -> "https://vidsonic.net/"
             embedUrl.contains("vidmoly") -> "https://vidmoly.to/"
             else -> null
@@ -131,9 +135,95 @@ fun VideoPlayerScreen(movieId: Int, version: String, onBack: () -> Unit) {
                 } else url
             } else url
 
-            val mediaItem = androidx.media3.common.MediaItem.fromUri(directUrl)
+            val isHls = directUrl.contains(".m3u8", ignoreCase = true) || directUrl.contains("/hls/", ignoreCase = true)
+            val mediaItemBuilder = androidx.media3.common.MediaItem.Builder()
+                .setUri(directUrl)
+            if (isHls) {
+                mediaItemBuilder.setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8)
+            }
+            val mediaItem = mediaItemBuilder.build()
             player.setMediaItem(mediaItem)
+            hasSeeked = false
             player.prepare()
+        }
+    }
+
+    val startTime = remember { System.currentTimeMillis() }
+    val scope = rememberCoroutineScope()
+    var isExiting by remember { mutableStateOf(false) }
+
+    suspend fun saveProgress(movieId: Int, currentPositionMs: Long) {
+        val user = DataCache.currentUser ?: return
+        val currentPositionSec = currentPositionMs / 1000.0
+        if (currentPositionSec < 5.0) return
+
+        val nowIso = SupabaseManager.getFormattedTimestamp()
+        val updatedProgress = user.watchProgress.toMutableMap().apply {
+            put(movieId.toString(), WatchProgressVal(time = currentPositionSec, updatedAt = nowIso))
+        }
+
+        val updatedUser = user.copy(watchProgress = updatedProgress)
+        val savedUser = SupabaseManager.upsertUser(updatedUser)
+        if (savedUser != null) {
+            DataCache.currentUser = savedUser
+        }
+    }
+
+    fun handleExit() {
+        if (isExiting) return
+        isExiting = true
+        scope.launch {
+            try {
+                val currentPos = player.currentPosition
+                saveProgress(movieId, currentPos)
+                
+                val minutesWatched = ((System.currentTimeMillis() - startTime) / 60000).toInt()
+                val user = DataCache.currentUser
+                if (user != null) {
+                    SupabaseManager.logEvent(
+                        DbEvent(
+                            user_id = user.telegramId,
+                            first_name = user.firstName,
+                            event_name = "▶️ Vista ($minutesWatched min)",
+                            movie_id = movieId.toLong(),
+                            movie_title = movieTitle,
+                            language = version
+                        )
+                    )
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                onBack()
+            }
+        }
+    }
+
+    LaunchedEffect(cleanUrl) {
+        if (cleanUrl != null) {
+            val user = DataCache.currentUser
+            if (user != null) {
+                scope.launch {
+                    val currentHistory = user.watchHistory.filter { it != movieId }
+                    val newHistory = (listOf(movieId) + currentHistory).take(40)
+                    val newHidden = user.hiddenHistory.filter { it != movieId }
+                    val updatedUser = user.copy(watchHistory = newHistory, hiddenHistory = newHidden)
+                    val savedUser = SupabaseManager.upsertUser(updatedUser)
+                    if (savedUser != null) {
+                        DataCache.currentUser = savedUser
+                    }
+                    SupabaseManager.logEvent(
+                        DbEvent(
+                            user_id = user.telegramId,
+                            first_name = user.firstName,
+                            event_name = "▶️ Vista",
+                            movie_id = movieId.toLong(),
+                            movie_title = movieTitle,
+                            language = version
+                        )
+                    )
+                }
+            }
         }
     }
 
@@ -157,10 +247,42 @@ fun VideoPlayerScreen(movieId: Int, version: String, onBack: () -> Unit) {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 isBuffering = playbackState == androidx.media3.common.Player.STATE_BUFFERING
                 duration = player.duration.coerceAtLeast(0L)
+                
+                if (playbackState == androidx.media3.common.Player.STATE_READY) {
+                    if (!hasSeeked) {
+                        hasSeeked = true
+                        val savedProgressSec = DataCache.currentUser?.watchProgress?.get(movieId.toString())?.time ?: 0.0
+                        if (savedProgressSec > 5.0) {
+                            player.seekTo((savedProgressSec * 1000).toLong())
+                        }
+                    }
+                }
+                
+                if (playbackState == androidx.media3.common.Player.STATE_ENDED) {
+                    scope.launch {
+                        val user = DataCache.currentUser
+                        if (user != null) {
+                            val updatedProgress = user.watchProgress.toMutableMap().apply {
+                                remove(movieId.toString())
+                            }
+                            val updatedUser = user.copy(watchProgress = updatedProgress)
+                            val savedUser = SupabaseManager.upsertUser(updatedUser)
+                            if (savedUser != null) {
+                                DataCache.currentUser = savedUser
+                            }
+                        }
+                    }
+                }
             }
 
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
+                if (!playing) {
+                    val pos = player.currentPosition
+                    scope.launch {
+                        saveProgress(movieId, pos)
+                    }
+                }
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
@@ -183,6 +305,19 @@ fun VideoPlayerScreen(movieId: Int, version: String, onBack: () -> Unit) {
         }
     }
 
+    // Guardado de progreso periódico en Supabase cada 60 segundos de reproducción activa
+    LaunchedEffect(isPlaying) {
+        while (isPlaying) {
+            delay(60000)
+            if (isPlaying) {
+                val currentPos = player.currentPosition
+                scope.launch {
+                    saveProgress(movieId, currentPos)
+                }
+            }
+        }
+    }
+
     // Ocultar controles automáticamente después de 3.5 segundos de inactividad
     LaunchedEffect(showControls, isPlaying) {
         if (showControls && isPlaying && !isBuffering) {
@@ -199,7 +334,7 @@ fun VideoPlayerScreen(movieId: Int, version: String, onBack: () -> Unit) {
 
     // Manejador del botón "Atrás" del sistema
     BackHandler {
-        onBack()
+        handleExit()
     }
 
     Box(
@@ -230,7 +365,7 @@ fun VideoPlayerScreen(movieId: Int, version: String, onBack: () -> Unit) {
                             true
                         }
                         Key.Back -> {
-                            onBack()
+                            handleExit()
                             true
                         }
                         else -> false

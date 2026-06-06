@@ -24,8 +24,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -34,12 +37,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.compose.foundation.border
+import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.SignalWifiOff
 import androidx.tv.material3.*
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun MovieCardPlaceholder() {
@@ -86,12 +91,16 @@ fun MovieCard(
     modifier: Modifier = Modifier,
     isFirstInRow: Boolean = false,
     cardWidth: androidx.compose.ui.unit.Dp = 110.dp,
-    screenKey: String? = null
+    screenKey: String? = null,
+    focusRequester: FocusRequester = remember { FocusRequester() },
+    nextFocusRequester: FocusRequester? = null,
+    leftFocus: FocusRequester? = null,
+    upFocus: FocusRequester? = null,
+    downFocus: FocusRequester? = null
 ) {
     val sidebarRequesters = LocalTabFocusRequesters.current
     val selectedTab = LocalSelectedTab.current
     var isFocused by remember { mutableStateOf(false) }
-    val focusRequester = remember { FocusRequester() }
 
     // Focus restoration logic
     LaunchedEffect(movie.id, screenKey) {
@@ -104,9 +113,22 @@ fun MovieCard(
         }
     }
 
+    val cardScale by animateFloatAsState(
+        targetValue = if (isFocused) 1.1f else 1.0f,
+        animationSpec = tween(200, easing = FastOutSlowInEasing),
+        label = "movieCardScale"
+    )
+
+    Box(modifier = Modifier.graphicsLayer { clip = false }) {
     Column(
         modifier = modifier
             .width(cardWidth)
+            .graphicsLayer {
+                scaleX = cardScale
+                scaleY = cardScale
+                clip = false
+                transformOrigin = TransformOrigin(0.5f, 0f)
+            }
             .onFocusChanged { 
                 isFocused = it.hasFocus
                 if (it.hasFocus && screenKey != null) {
@@ -118,7 +140,7 @@ fun MovieCard(
     ) {
         Surface(
             onClick = onClick,
-            scale = ClickableSurfaceDefaults.scale(focusedScale = 1.1f),
+            scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
             border = ClickableSurfaceDefaults.border(
                 border = Border(androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.1f))),
                 focusedBorder = Border(androidx.compose.foundation.BorderStroke(2.dp, Color(0xFFFFE000)))
@@ -132,9 +154,16 @@ fun MovieCard(
                 .aspectRatio(2f / 3f)
                 .focusRequester(focusRequester)
                 .focusProperties {
-                    if (isFirstInRow && sidebarRequesters.isNotEmpty()) {
-                        left = sidebarRequesters[selectedTab]
+                    left = leftFocus ?: if (isFirstInRow && sidebarRequesters.isNotEmpty()) {
+                        sidebarRequesters[selectedTab]
+                    } else FocusRequester.Default
+                    
+                    if (nextFocusRequester != null) {
+                        right = nextFocusRequester
                     }
+                    
+                    if (upFocus != null) up = upFocus
+                    if (downFocus != null) down = downFocus
                 }
         ) {
             AsyncImage(
@@ -184,7 +213,166 @@ fun MovieCard(
                 color = if (isFocused) Gold else Color.White.copy(alpha = 0.5f)
             )
         }
+    } // end Column
+    } // end Box
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
+@Composable
+fun HistoryMovieCard(
+    movie: Movie,
+    progressSec: Double,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    isFirstInRow: Boolean = false,
+    screenKey: String? = null
+) {
+    val sidebarRequesters = LocalTabFocusRequesters.current
+    val selectedTab = LocalSelectedTab.current
+    var isFocused by remember { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
+
+    // Focus restoration logic
+    LaunchedEffect(movie.id, screenKey) {
+        if (screenKey != null && DataCache.lastFocusedMovieId[screenKey] == movie.id && DataCache.globalLastFocusedKey == screenKey) {
+            try {
+                focusRequester.requestFocus()
+            } catch (e: Exception) {}
+        }
     }
+
+    val histCardScale by animateFloatAsState(
+        targetValue = if (isFocused) 1.1f else 1.0f,
+        animationSpec = tween(200, easing = FastOutSlowInEasing),
+        label = "histCardScale"
+    )
+
+    Box(modifier = Modifier.graphicsLayer { clip = false }) {
+    Column(
+        modifier = modifier
+            .width(96.dp)
+            .graphicsLayer {
+                scaleX = histCardScale
+                scaleY = histCardScale
+                clip = false
+                transformOrigin = TransformOrigin(0.5f, 0f)
+            }
+            .onFocusChanged {
+                isFocused = it.hasFocus
+                if (it.hasFocus && screenKey != null) {
+                    DataCache.lastFocusedMovieId[screenKey] = movie.id
+                    DataCache.globalLastFocusedKey = screenKey
+                }
+            }
+            .padding(bottom = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Surface(
+            onClick = onClick,
+            scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
+            border = ClickableSurfaceDefaults.border(
+                border = Border(androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.1f))),
+                focusedBorder = Border(androidx.compose.foundation.BorderStroke(2.dp, Color(0xFF3B82F6)))
+            ),
+            glow = ClickableSurfaceDefaults.glow(
+                focusedGlow = Glow(Color(0xFF3B82F6).copy(alpha = 0.5f), 10.dp)
+            ),
+            shape = ClickableSurfaceDefaults.shape(CircleShape),
+            modifier = Modifier
+                .size(80.dp)
+                .focusRequester(focusRequester)
+                .focusProperties {
+                    if (isFirstInRow && sidebarRequesters.isNotEmpty()) {
+                        left = sidebarRequesters[selectedTab]
+                    }
+                }
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                AsyncImage(
+                    model = "https://image.tmdb.org/t/p/w500${movie.poster_path}",
+                    contentDescription = movie.title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+                
+                val runtimeMin = movie.runtime ?: 120
+                val totalDurationSec = runtimeMin * 60.0
+                val progressFraction = (progressSec / totalDurationSec).coerceIn(0.0, 1.0).toFloat()
+                
+                androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+                    val strokeWidth = 4.dp.toPx()
+                    val diameter = size.minDimension - strokeWidth
+                    val radius = diameter / 2
+                    val arcSize = androidx.compose.ui.geometry.Size(diameter, diameter)
+                    val arcOffset = Offset(
+                        (size.width - diameter) / 2,
+                        (size.height - diameter) / 2
+                    )
+                    
+                    // Background grey ring
+                    drawCircle(
+                        color = Color.White.copy(alpha = 0.15f),
+                        radius = radius,
+                        style = Stroke(width = strokeWidth)
+                    )
+                    
+                    // Foreground blue progress arc
+                    drawArc(
+                        color = Color(0xFF3B82F6),
+                        startAngle = -90f,
+                        sweepAngle = progressFraction * 360f,
+                        useCenter = false,
+                        style = Stroke(width = strokeWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round),
+                        size = arcSize,
+                        topLeft = arcOffset
+                    )
+                }
+                
+                if (isFocused) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color(0x33000000)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(6.dp))
+        
+        Text(
+            text = movie.title.cleanTitle(),
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            color = if (isFocused) Color.White else Color.White.copy(alpha = 0.6f),
+            fontWeight = if (isFocused) FontWeight.Bold else FontWeight.Normal,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp).then(
+                if (isFocused) Modifier.basicMarquee(iterations = Int.MAX_VALUE, velocity = 50.dp, initialDelayMillis = 1000) else Modifier
+            )
+        )
+        
+        val progressMin = (progressSec / 60.0).toInt()
+        Text(
+            text = "$progressMin MIN",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF60A5FA),
+            fontWeight = FontWeight.Black,
+            fontSize = 9.sp,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth()
+        )
+    } // end Column
+    } // end Box
 }
 
 @OptIn(ExperimentalTvMaterial3Api::class)
@@ -318,6 +506,12 @@ fun HeroSection(
     
     // Auto-update info when movie list changes
     val movie = if (movies.isNotEmpty()) movies[currentIndex % movies.size] else null
+
+    val scope = rememberCoroutineScope()
+    val isFavorite = remember(movie, DataCache.currentUser) {
+        val id = movie?.id
+        DataCache.currentUser?.favorites?.any { it.id == id } == true
+    }
 
     // Focus restoration logic for Hero Section
     LaunchedEffect(movies, screenKey) {
@@ -489,18 +683,28 @@ fun HeroSection(
 
                 // Genres Row
                 if (!m.genres.isNullOrEmpty()) {
-                    Row {
-                        Text(
-                            text = "Géneros: ",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = Gold
-                        )
-                        Text(
-                            text = m.genres!!.joinToString(", ") { it.name },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = Color.White
-                        )
+                    Box(
+                        modifier = Modifier
+                            .background(Color(0x4D000000), RoundedCornerShape(8.dp))
+                            .padding(vertical = 6.dp, horizontal = 12.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "GÉNEROS:",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Gold,
+                                fontSize = 13.sp
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = m.genres!!.joinToString(" • ") { it.name },
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = Color(0xFF9CA3AF),
+                                fontSize = 14.sp
+                            )
+                        }
                     }
                 }
 
@@ -516,8 +720,13 @@ fun HeroSection(
                         animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
                         label = "scale"
                     )
+                    val verAhoraAlpha by animateFloatAsState(
+                        targetValue = if (isVerAhoraFocused) 1f else 0.6f,
+                        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+                        label = "alpha"
+                    )
                     val verAhoraContentColor by animateColorAsState(
-                        targetValue = if (isVerAhoraFocused) Color(0xFF3A3000) else Color(0xFFD0C6AB).copy(alpha = 0.8f),
+                        targetValue = if (isVerAhoraFocused) Color(0xFF3A3000) else Color.Black,
                         animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
                         label = "color"
                     )
@@ -539,11 +748,12 @@ fun HeroSection(
                             .graphicsLayer {
                                 scaleX = verAhoraScale
                                 scaleY = verAhoraScale
+                                alpha = verAhoraAlpha
                             }
                             .requiredWidth(180.dp)
                             .requiredHeight(52.dp),
                         colors = ButtonDefaults.colors(
-                            containerColor = Color(0xFFE0E0E0),
+                            containerColor = Color.White.copy(alpha = 0.9f),
                             contentColor = verAhoraContentColor,
                             focusedContainerColor = Color.Transparent,
                             focusedContentColor = verAhoraContentColor
@@ -585,13 +795,40 @@ fun HeroSection(
                         label = "scale"
                     )
                     val masInfoContentColor by animateColorAsState(
-                        targetValue = if (isMasInfoFocused) Color(0xFF3A3000) else Color(0xFFD0C6AB).copy(alpha = 0.8f),
+                        targetValue = if (isMasInfoFocused) Color(0xFF3A3000) else if (isFavorite) Gold else Color.White.copy(alpha = 0.8f),
                         animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
                         label = "color"
                     )
 
                     Button(
-                        onClick = { onMovieClick(m) },
+                        onClick = {
+                            val user = DataCache.currentUser
+                            if (user != null && m != null) {
+                                scope.launch {
+                                    val newFavorites = if (isFavorite) {
+                                        user.favorites.filter { it.id != m.id }
+                                    } else {
+                                        user.favorites + FavoriteItem(id = m.id, title = m.title)
+                                    }
+                                    val updatedUser = user.copy(favorites = newFavorites)
+                                    val savedUser = SupabaseManager.upsertUser(updatedUser)
+                                    if (savedUser != null) {
+                                        DataCache.currentUser = savedUser
+                                    }
+                                    
+                                    val eventName = if (isFavorite) "💔 Unlike" else "❤️ Like"
+                                    SupabaseManager.logEvent(
+                                        DbEvent(
+                                            user_id = user.telegramId,
+                                            first_name = user.firstName,
+                                            event_name = eventName,
+                                            movie_id = m.id.toLong(),
+                                            movie_title = m.title
+                                        )
+                                    )
+                                }
+                            }
+                        },
                         modifier = Modifier
                             .onFocusChanged { 
                                 isMasInfoFocused = it.isFocused
@@ -605,8 +842,7 @@ fun HeroSection(
                                 scaleX = masInfoScale
                                 scaleY = masInfoScale
                             }
-                            .requiredWidth(180.dp)
-                            .requiredHeight(52.dp),
+                            .requiredSize(52.dp),
                         colors = ButtonDefaults.colors(
                             containerColor = Color.White.copy(alpha = 0.1f),
                             contentColor = masInfoContentColor,
@@ -617,7 +853,7 @@ fun HeroSection(
                         glow = ButtonDefaults.glow(
                             focusedGlow = Glow(Color(0xFFFFD700).copy(alpha = 0.4f), 10.dp)
                         ),
-                        shape = ButtonDefaults.shape(RoundedCornerShape(6.dp)),
+                        shape = ButtonDefaults.shape(CircleShape),
                         contentPadding = PaddingValues(0.dp)
                     ) {
                         Box(
@@ -632,12 +868,11 @@ fun HeroSection(
                                 ),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                "Más info",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.ExtraBold,
-                                textAlign = TextAlign.Center,
-                                color = masInfoContentColor
+                            Icon(
+                                imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder,
+                                contentDescription = if (isFavorite) "Quitar de Favoritos" else "Agregar a Favoritos",
+                                modifier = Modifier.size(24.dp),
+                                tint = masInfoContentColor
                             )
                         }
                     }
