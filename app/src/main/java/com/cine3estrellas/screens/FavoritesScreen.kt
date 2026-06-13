@@ -67,6 +67,7 @@ private enum class FavSortMode(val label: String) {
 @OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun FavoritesScreen(onMovieClick: (Int) -> Unit) {
+    val isDetailsActive = LocalDetailsActive.current
     val scope = rememberCoroutineScope()
     val sidebarRequesters = LocalTabFocusRequesters.current
     val selectedTab = LocalSelectedTab.current
@@ -136,12 +137,7 @@ fun FavoritesScreen(onMovieClick: (Int) -> Unit) {
     }
 
     // Continuous focus requesters
-    val focusRequesters = remember { mutableStateListOf<FocusRequester>() }
-    LaunchedEffect(displayMovies.size) {
-        while (focusRequesters.size < displayMovies.size) {
-            focusRequesters.add(FocusRequester())
-        }
-    }
+    val focusRequesters = remember(displayMovies.size) { List(displayMovies.size) { FocusRequester() } }
 
     // Auto-focus first card when entering edit mode
     LaunchedEffect(editMode) {
@@ -369,7 +365,8 @@ fun FavoritesScreen(onMovieClick: (Int) -> Unit) {
                     columns = GridCells.Adaptive(itemWidth),
                     horizontalArrangement = Arrangement.spacedBy(spacing),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize(),
                     contentPadding = PaddingValues(
                         start = 48.dp,
                         end = 48.dp,
@@ -378,7 +375,7 @@ fun FavoritesScreen(onMovieClick: (Int) -> Unit) {
                     )
                 ) {
                     itemsIndexed(displayMovies) { index, movie ->
-                        val fr = if (index < focusRequesters.size) focusRequesters[index] else remember { FocusRequester() }
+                        val fr = focusRequesters.getOrNull(index) ?: remember { FocusRequester() }
                         val nextFr = if (index + 1 < focusRequesters.size) focusRequesters[index + 1] else null
                         
                         FavMovieCard(
@@ -543,15 +540,33 @@ private fun FavMovieCard(
 ) {
     val sidebarRequesters = LocalTabFocusRequesters.current
     val selectedTab = LocalSelectedTab.current
+    val isDetailsActive = LocalDetailsActive.current
     
     val scope = rememberCoroutineScope()
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
 
     // Focus restoration logic matching MovieCard
-    LaunchedEffect(movie.id) {
-        if (DataCache.lastFocusedMovieId["favorites"] == movie.id && DataCache.globalLastFocusedKey == "favorites") {
-            try { focusRequester.requestFocus() } catch (e: Exception) {}
+    LaunchedEffect(isDetailsActive, movie.id, focusRequester) {
+        if (!isDetailsActive) {
+            val restoreId = DataCache.movieIdToRestore
+            val restoreKey = DataCache.keyToRestore
+            val shouldRestore = if (restoreId != null && restoreKey != null) {
+                restoreId == movie.id && restoreKey == "favorites"
+            } else {
+                DataCache.lastFocusedMovieId["favorites"] == movie.id && DataCache.globalLastFocusedKey == "favorites"
+            }
+
+            if (shouldRestore) {
+                delay(50) // Tiny delay for UI settling
+                try {
+                    focusRequester.requestFocus()
+                } catch (e: Exception) {}
+                if (restoreId != null) {
+                    DataCache.movieIdToRestore = null
+                    DataCache.keyToRestore = null
+                }
+            }
         }
     }
 

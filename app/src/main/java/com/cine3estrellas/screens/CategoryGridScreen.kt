@@ -21,8 +21,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.*
 import com.cine3estrellas.*
+import androidx.activity.compose.BackHandler
 import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.query.Order
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
@@ -32,6 +34,12 @@ fun CategoryGridScreen(
     onMovieClick: (Int) -> Unit,
     onBack: () -> Unit
 ) {
+    BackHandler {
+        onBack()
+    }
+
+    val isDetailsActive = LocalDetailsActive.current
+    var initialFocusRequested by remember(categoryId) { mutableStateOf(false) }
     val category = remember(categoryId) { DataCache.homeCategories.find { it.id == categoryId } }
     var movies by remember { mutableStateOf(DataCache.homeCategoryMovies[categoryId] ?: emptyList()) }
     val totalCount = DataCache.homeCategoryTotalCounts[categoryId] ?: 999999L
@@ -48,6 +56,7 @@ fun CategoryGridScreen(
         }
     }
     
+
     var isPageLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
  
@@ -101,14 +110,16 @@ fun CategoryGridScreen(
         }
     }
 
-    LaunchedEffect(movies.size) {
-        // Removed forced focus to allow natural restoration
-        /*
-        if (movies.size > 0 && movies.size <= 100) {
-            kotlinx.coroutines.delay(100)
-            try { itemRequesters.getOrNull(0)?.requestFocus() } catch (e: Exception) {}
+    LaunchedEffect(movies, isDetailsActive) {
+        if (movies.isNotEmpty() && !isDetailsActive && !initialFocusRequested) {
+            initialFocusRequested = true
+            delay(150) // Wait for layout/composition to settle
+            try {
+                itemRequesters.getOrNull(0)?.requestFocus()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
-        */
     }
 
     Box(
@@ -123,7 +134,8 @@ fun CategoryGridScreen(
             columns = GridCells.Adaptive(110.dp),
             horizontalArrangement = Arrangement.spacedBy(20.dp),
             verticalArrangement = Arrangement.spacedBy(24.dp),
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize(),
             contentPadding = PaddingValues(
                 start = 48.dp,
                 end = 48.dp,

@@ -46,6 +46,7 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun SearchScreen(onMovieClick: (Int) -> Unit) {
+    val isDetailsActive = LocalDetailsActive.current
     // Using DataCache to preserve state across navigation
     var searchQuery by remember { mutableStateOf(DataCache.searchQuery) }
     var searchResults by remember { mutableStateOf(DataCache.searchResults) }
@@ -520,20 +521,12 @@ fun SearchScreen(onMovieClick: (Int) -> Unit) {
                     }
                 }
             } else {
-                val focusRequesters = remember { 
-                    val list = mutableStateListOf<FocusRequester>()
-                    repeat(searchResults.size) { list.add(FocusRequester()) }
-                    list
-                }
-                LaunchedEffect(searchResults.size) {
-                    while (focusRequesters.size < searchResults.size) {
-                        focusRequesters.add(FocusRequester())
-                    }
-                }
+                val focusRequesters = remember(searchResults.size) { List(searchResults.size) { FocusRequester() } }
                 
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(110.dp),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth(),
                     contentPadding = PaddingValues(top = 16.dp, bottom = 48.dp),
                     horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
                     verticalArrangement = Arrangement.spacedBy(24.dp),
@@ -547,8 +540,8 @@ fun SearchScreen(onMovieClick: (Int) -> Unit) {
                             movie = movie, 
                             onClick = { onMovieClick(movie.id) },
                             screenKey = "search",
-                            focusRequester = if (index < focusRequesters.size) focusRequesters[index] else remember { FocusRequester() },
-                            nextFocusRequester = if (index < focusRequesters.size - 1) focusRequesters[index + 1] else null
+                            focusRequester = focusRequesters.getOrNull(index) ?: remember { FocusRequester() },
+                            nextFocusRequester = focusRequesters.getOrNull(index + 1)
                         )
                     }
                 }

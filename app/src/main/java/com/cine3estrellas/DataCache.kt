@@ -2,6 +2,7 @@ package com.cine3estrellas
 
 import android.content.Context
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -97,4 +98,22 @@ object DataCache {
     
     // Stores the key of the ABSOLUTE LAST focused context to prevent multiple components from stealing focus
     var globalLastFocusedKey by mutableStateOf<String?>(null)
+
+    // Trigger to re-request focus when an overlay closes
+    var focusRestorationTrigger by mutableIntStateOf(0)
+
+    // Targets to restore focus after overlay closes to avoid race conditions with default focus manager
+    var movieIdToRestore by mutableStateOf<Int?>(null)
+    var keyToRestore by mutableStateOf<String?>(null)
+    var categoryIdToRestore by mutableStateOf<String?>(null)
+
+    // Vertical scroll position of the main HomeScreen LazyColumn
+    var homeScrollPosition by mutableStateOf(0 to 0)
+
+    // Current slide index of the Hero carousel
+    var heroCurrentIndex by mutableIntStateOf(0)
+
+    // --- SCROLL PERSISTENCE ---
+    // Key: category ID or row unique key. Value: Pair(index, offset)
+    val rowScrollPositions = mutableStateMapOf<String, Pair<Int, Int>>()
 }

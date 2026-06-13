@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.compose.foundation.border
+import androidx.compose.ui.input.key.*
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.rounded.Add
@@ -83,6 +84,43 @@ fun String.cleanTitle(): String {
     return this.replace(Regex("\\s\\(\\d{4}\\)$"), "").trim()
 }
 
+/**
+ * Converts text-based certifications (TMDB) to numerical format (+18, +16, etc.)
+ */
+fun formatCertification(cert: String?): String {
+    if (cert.isNullOrBlank()) return ""
+    
+    // Normalize string
+    val c = cert.uppercase().trim()
+    
+    // Check if the certification is just a number
+    if (c.all { it.isDigit() }) return "+$c"
+
+    return when {
+        // Spain / Generic numeric
+        c.contains("18") -> "+18"
+        c.contains("16") -> "+16"
+        c.contains("15") -> "+15"
+        c.contains("13") -> "+13"
+        c.contains("12") -> "+12"
+        c.contains("7") -> "+7"
+        
+        // US Ratings (Common in TMDB)
+        c == "R" || c == "NC-17" || c == "TV-MA" -> "+18"
+        c == "PG-13" || c == "TV-14" -> "+13"
+        c == "PG" || c == "TV-PG" -> "+7"
+        c == "G" || c == "TV-G" || c == "TV-Y" || c == "TV-Y7" -> "TP" // Todo Público
+        
+        // Latin America
+        c == "C" -> "+18"
+        c == "B15" -> "+15"
+        c == "B" -> "+12"
+        c == "A" -> "TP"
+        
+        else -> cert // Fallback
+    }
+}
+
 @OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun MovieCard(
@@ -100,15 +138,31 @@ fun MovieCard(
 ) {
     val sidebarRequesters = LocalTabFocusRequesters.current
     val selectedTab = LocalSelectedTab.current
+    val isDetailsActive = LocalDetailsActive.current
     var isFocused by remember { mutableStateOf(false) }
 
     // Focus restoration logic
-    LaunchedEffect(movie.id, screenKey) {
-        if (screenKey != null && DataCache.lastFocusedMovieId[screenKey] == movie.id && DataCache.globalLastFocusedKey == screenKey) {
-            try {
-                focusRequester.requestFocus()
-            } catch (e: Exception) {
-                // Ignore if called too early
+    LaunchedEffect(isDetailsActive, focusRequester) {
+        if (!isDetailsActive && screenKey != null) {
+            val restoreId = DataCache.movieIdToRestore
+            val restoreKey = DataCache.keyToRestore
+            val shouldRestore = if (restoreId != null && restoreKey != null) {
+                restoreId == movie.id && restoreKey == screenKey
+            } else {
+                DataCache.lastFocusedMovieId[screenKey] == movie.id && DataCache.globalLastFocusedKey == screenKey
+            }
+
+            if (shouldRestore) {
+                delay(50) // Tiny delay for UI settling
+                try {
+                    focusRequester.requestFocus()
+                } catch (e: Exception) {
+                    // Ignore
+                }
+                if (restoreId != null) {
+                    DataCache.movieIdToRestore = null
+                    DataCache.keyToRestore = null
+                }
             }
         }
     }
@@ -225,19 +279,35 @@ fun HistoryMovieCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     isFirstInRow: Boolean = false,
-    screenKey: String? = null
+    screenKey: String? = null,
+    focusRequester: FocusRequester = remember { FocusRequester() }
 ) {
     val sidebarRequesters = LocalTabFocusRequesters.current
     val selectedTab = LocalSelectedTab.current
+    val isDetailsActive = LocalDetailsActive.current
     var isFocused by remember { mutableStateOf(false) }
-    val focusRequester = remember { FocusRequester() }
 
     // Focus restoration logic
-    LaunchedEffect(movie.id, screenKey) {
-        if (screenKey != null && DataCache.lastFocusedMovieId[screenKey] == movie.id && DataCache.globalLastFocusedKey == screenKey) {
-            try {
-                focusRequester.requestFocus()
-            } catch (e: Exception) {}
+    LaunchedEffect(isDetailsActive, movie.id, screenKey, focusRequester) {
+        if (!isDetailsActive && screenKey != null) {
+            val restoreId = DataCache.movieIdToRestore
+            val restoreKey = DataCache.keyToRestore
+            val shouldRestore = if (restoreId != null && restoreKey != null) {
+                restoreId == movie.id && restoreKey == screenKey
+            } else {
+                DataCache.lastFocusedMovieId[screenKey] == movie.id && DataCache.globalLastFocusedKey == screenKey
+            }
+
+            if (shouldRestore) {
+                delay(50) // Tiny delay for UI settling
+                try {
+                    focusRequester.requestFocus()
+                } catch (e: Exception) {}
+                if (restoreId != null) {
+                    DataCache.movieIdToRestore = null
+                    DataCache.keyToRestore = null
+                }
+            }
         }
     }
 
@@ -381,17 +451,32 @@ fun SeeMoreCard(
     remainingCount: Int,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    screenKey: String? = null
+    screenKey: String? = null,
+    focusRequester: FocusRequester = remember { FocusRequester() }
 ) {
     var isFocused by remember { mutableStateOf(false) }
-    val focusRequester = remember { FocusRequester() }
+
+    val isCategoryActive = LocalCategoryActive.current
 
     // Focus restoration logic
-    LaunchedEffect(screenKey) {
-        if (screenKey != null && DataCache.globalLastFocusedKey == screenKey) {
-            try {
-                focusRequester.requestFocus()
-            } catch (e: Exception) {}
+    LaunchedEffect(isCategoryActive, screenKey, focusRequester) {
+        if (!isCategoryActive && screenKey != null) {
+            val restoreKey = DataCache.categoryIdToRestore
+            val shouldRestore = if (restoreKey != null) {
+                screenKey == "home_category_${restoreKey}_seemore"
+            } else {
+                DataCache.globalLastFocusedKey == screenKey
+            }
+
+            if (shouldRestore) {
+                delay(50) // Tiny delay for UI settling
+                try {
+                    focusRequester.requestFocus()
+                } catch (e: Exception) {}
+                if (restoreKey != null) {
+                    DataCache.categoryIdToRestore = null
+                }
+            }
         }
     }
     
@@ -499,10 +584,14 @@ fun HeroSection(
     initialFocusRequester: FocusRequester? = null,
     screenKey: String? = null
 ) {
-    // Basic Carousel for Hero
-    var currentIndex by remember { mutableStateOf(0) }
+    // Basic Carousel for Hero (persisted in DataCache)
+    val currentIndex = DataCache.heroCurrentIndex
     var isAnyElementFocused by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
+    
+    // Track if the user has explicitly interacted with the Hero (e.g., moved within it or clicked)
+    // This allows the carousel to scroll on startup even if focused by default.
+    var hasInteractedWithHero by remember { mutableStateOf(false) }
     
     // Auto-update info when movie list changes
     val movie = if (movies.isNotEmpty()) movies[currentIndex % movies.size] else null
@@ -513,13 +602,15 @@ fun HeroSection(
         DataCache.currentUser?.favorites?.any { it.id == id } == true
     }
 
+    val isDetailsActive = LocalDetailsActive.current
     // Focus restoration logic for Hero Section
-    LaunchedEffect(movies, screenKey) {
-        if (screenKey != null && DataCache.globalLastFocusedKey == screenKey) {
+    LaunchedEffect(isDetailsActive) {
+        if (!isDetailsActive && screenKey != null && DataCache.globalLastFocusedKey == screenKey) {
             val lastFocusedId = DataCache.lastFocusedMovieId[screenKey]
             val indexInHero = movies.indexOfFirst { it.id == lastFocusedId }
             if (indexInHero != -1) {
-                currentIndex = indexInHero
+                DataCache.heroCurrentIndex = indexInHero
+                delay(50)
                 try {
                     focusRequester.requestFocus()
                 } catch (e: Exception) {}
@@ -528,11 +619,12 @@ fun HeroSection(
     }
 
     // Automatic carousel logic
-    LaunchedEffect(movies, isAnyElementFocused) {
-        if (movies.isNotEmpty() && !isAnyElementFocused) {
+    LaunchedEffect(movies, isAnyElementFocused, hasInteractedWithHero) {
+        // Scroll if no focus OR if focused but user hasn't interacted yet (initial entry)
+        if (movies.isNotEmpty() && (!isAnyElementFocused || !hasInteractedWithHero)) {
             while (true) {
                 delay(5000) // 5 seconds per slide
-                currentIndex = (currentIndex + 1) % movies.size
+                DataCache.heroCurrentIndex = (DataCache.heroCurrentIndex + 1) % movies.size
             }
         }
     }
@@ -640,16 +732,18 @@ fun HeroSection(
                     if (!m.certification.isNullOrBlank()) {
                         Spacer(modifier = Modifier.width(12.dp))
                         // Age Rating Badge
+                        val formattedCert = formatCertification(m.certification)
+                        val isAdult = formattedCert.contains("18")
                         Box(
                             modifier = Modifier
-                                .background(Gold, RoundedCornerShape(2.dp))
+                                .background(if (isAdult) Color.Red else Gold, RoundedCornerShape(2.dp))
                                 .padding(horizontal = 4.dp, vertical = 1.dp)
                         ) {
                             Text(
-                                text = m.certification!!,
+                                text = formattedCert,
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold,
-                                color = Color.Black,
+                                color = if (isAdult) Color.White else Color.Black,
                                 fontSize = 10.sp
                             )
                         }
@@ -732,11 +826,24 @@ fun HeroSection(
                     )
 
                     Button(
-                        onClick = { onMovieClick(m) },
+                        onClick = { 
+                            hasInteractedWithHero = true
+                            onMovieClick(m) 
+                        },
                         modifier = Modifier
                             .onFocusChanged { 
                                 isVerAhoraFocused = it.isFocused
                                 if (it.isFocused) onFocused()
+                                // If focused AND moving or clicking, mark as interacted
+                                if (it.isFocused && it.hasFocus) {
+                                    // We'll set this to true if the user actually does something
+                                }
+                            }
+                            .onPreviewKeyEvent { 
+                                if (it.type == KeyEventType.KeyDown) {
+                                    hasInteractedWithHero = true
+                                }
+                                false
                             }
                             .focusRequester(focusRequester)
                             .then(if (initialFocusRequester != null) Modifier.focusRequester(initialFocusRequester) else Modifier)
@@ -802,6 +909,7 @@ fun HeroSection(
 
                     Button(
                         onClick = {
+                            hasInteractedWithHero = true
                             val user = DataCache.currentUser
                             if (user != null && m != null) {
                                 scope.launch {
@@ -833,6 +941,12 @@ fun HeroSection(
                             .onFocusChanged { 
                                 isMasInfoFocused = it.isFocused
                                 if (it.isFocused) onFocused() 
+                            }
+                            .onPreviewKeyEvent { 
+                                if (it.type == KeyEventType.KeyDown) {
+                                    hasInteractedWithHero = true
+                                }
+                                false
                             }
                             .focusProperties { 
                                 up = FocusRequester.Cancel 

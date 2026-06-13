@@ -114,6 +114,7 @@ data class Movie(
     val backdrop_path: String? = null,
     val genre_ids: List<Int>? = null,
     val vote_average: Double? = null,
+    val popularity: Double? = null,
     val release_date: String? = null,
     val certification: String? = null,
     val overview: String? = null, // From TMDB

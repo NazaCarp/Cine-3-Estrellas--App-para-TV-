@@ -43,6 +43,8 @@ import io.github.jan.supabase.postgrest.query.Count
 import io.github.jan.supabase.postgrest.query.Order
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
@@ -116,7 +118,43 @@ fun HomeScreen(onMovieClick: (Int) -> Unit, onSeeMoreClick: (String) -> Unit) {
                     throw Exception("El servidor no devolvió datos válidos.")
                 }
 
-                DataCache.homeHeroMovies = response.heroMovies
+                // Reuse popular movies from "Lo Más Visto" category for the Hero section
+                // This avoids an extra API call.
+                val popularCategory = response.categories.find { 
+                    it.sort_by == "popularity" || it.id == "popular" || it.name.contains("Más Visto", ignoreCase = true) 
+                }
+                
+                if (popularCategory != null && popularCategory.movies.isNotEmpty()) {
+                    val baseMovies = popularCategory.movies.take(10)
+                    DataCache.homeHeroMovies = baseMovies
+                    
+                    // Enrich Hero movies with full metadata (overview, runtime, etc.) from TMDB
+                    scope.launch {
+                        val enrichedMovies = baseMovies.map { movie ->
+                            async {
+                                try {
+                                    val tmdbDetails = TmdbManager.getMovieDetails(movie.id)
+                                    if (tmdbDetails != null) {
+                                        movie.copy(
+                                            overview = tmdbDetails.overview ?: movie.overview,
+                                            runtime = tmdbDetails.runtime ?: movie.runtime,
+                                            genres = tmdbDetails.genres ?: movie.genres,
+                                            backdrop_path = tmdbDetails.backdrop_path ?: movie.backdrop_path,
+                                            vote_average = tmdbDetails.vote_average ?: movie.vote_average,
+                                            certification = tmdbDetails.certification ?: movie.certification
+                                        )
+                                    } else movie
+                                } catch (e: Exception) {
+                                    movie
+                                }
+                            }
+                        }.awaitAll()
+                        DataCache.homeHeroMovies = enrichedMovies
+                    }
+                } else {
+                    DataCache.homeHeroMovies = response.heroMovies
+                }
+
                 DataCache.homeCategories = response.categories.map { tvCat ->
                     HomeCategory(
                         id = tvCat.id,
@@ -200,7 +238,17 @@ fun HomeScreen(onMovieClick: (Int) -> Unit, onSeeMoreClick: (String) -> Unit) {
             }
         }
     } else {
-        val listState = rememberLazyListState()
+        val savedHomePosition = DataCache.homeScrollPosition
+        val listState = rememberLazyListState(
+            initialFirstVisibleItemIndex = savedHomePosition.first,
+            initialFirstVisibleItemScrollOffset = savedHomePosition.second
+        )
+
+        // Save vertical scroll position when it changes
+        LaunchedEffect(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset) {
+            DataCache.homeScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+        }
+
         var isHeroFocused by remember { mutableStateOf(false) }
         var focusTrigger by remember { mutableStateOf(0) }
 
@@ -277,6 +325,7 @@ fun HomeScreen(onMovieClick: (Int) -> Unit, onSeeMoreClick: (String) -> Unit) {
                 CategoryRow(
                     category = category,
                     rowIndex = index,
+                    hasHistory = historyMovies.isNotEmpty(),
                     onMovieClick = onMovieClick,
                     onSeeMoreClick = onSeeMoreClick,
                     onFocusGained = { initialFocusRequested = true },
@@ -292,24 +341,64 @@ fun HomeScreen(onMovieClick: (Int) -> Unit, onSeeMoreClick: (String) -> Unit) {
 fun CategoryRow(
     category: HomeCategory,
     rowIndex: Int,
+    hasHistory: Boolean,
     onMovieClick: (Int) -> Unit,
     onSeeMoreClick: (String) -> Unit,
     onFocusGained: () -> Unit,
     parentListState: LazyListState
 ) {
+    val rowKey = "home_category_${category.id}"
     val rawMovies = DataCache.homeCategoryMovies[category.id] ?: emptyList()
-    val rowState = rememberLazyListState()
-    val firstItemRequester = remember { FocusRequester() }
+    val displayMovies = remember(rawMovies) { rawMovies.take(15) }
+    
+    // Restore scroll position from cache
+    val savedPosition = DataCache.rowScrollPositions[rowKey] ?: (0 to 0)
+    val rowState = rememberLazyListState(
+        initialFirstVisibleItemIndex = savedPosition.first,
+        initialFirstVisibleItemScrollOffset = savedPosition.second
+    )
 
-    // Reset scroll when the row leaves the viewport
+    // Save scroll position when it changes
+    LaunchedEffect(rowState.firstVisibleItemIndex, rowState.firstVisibleItemScrollOffset) {
+        DataCache.rowScrollPositions[rowKey] = rowState.firstVisibleItemIndex to rowState.firstVisibleItemScrollOffset
+    }
+
+    val itemRequesters = remember(displayMovies.size) { List(displayMovies.size) { FocusRequester() } }
+    val seeMoreRequester = remember { FocusRequester() }
+
+    val lastFocusedId = DataCache.lastFocusedMovieId[rowKey]
+    val lastFocusedRequester = remember(lastFocusedId, displayMovies, itemRequesters.size) {
+        val lastIdx = displayMovies.indexOfFirst { it.id == lastFocusedId }
+        if (lastIdx != -1) itemRequesters.getOrNull(lastIdx) else null
+    }
+
+    val isSeeMoreFocusedLast = remember {
+        derivedStateOf { DataCache.globalLastFocusedKey == "${rowKey}_seemore" }
+    }
+
     val isVisible by remember {
-        derivedStateOf<Boolean> {
-            parentListState.layoutInfo.visibleItemsInfo.any { it.index == rowIndex + 1 }
+        derivedStateOf {
+            val visibleItems = parentListState.layoutInfo.visibleItemsInfo
+            val actualIndex = if (hasHistory) rowIndex + 2 else rowIndex + 1
+            visibleItems.any { it.index == actualIndex }
         }
     }
 
     // This state tracks if we should force focus to the first item on the next entry
     var isFirstEntry by remember(isVisible) { mutableStateOf(true) }
+
+    LaunchedEffect(isVisible) {
+        if (!isVisible) {
+            try {
+                rowState.scrollToItem(0, 0)
+            } catch (e: Exception) {}
+            DataCache.rowScrollPositions[rowKey] = 0 to 0
+            DataCache.lastFocusedMovieId.remove("home_category_${category.id}")
+            isFirstEntry = true
+        }
+    }
+
+    val isDetailsActive = LocalDetailsActive.current
 
     var isRowFocused by remember { mutableStateOf(false) }
     val titleScale by animateFloatAsState(
@@ -318,16 +407,7 @@ fun CategoryRow(
         label = "category_title_scale"
     )
 
-    LaunchedEffect(isVisible) {
-        if (!isVisible && rowState.firstVisibleItemIndex > 0) {
-            rowState.scrollToItem(0)
-        }
-    }
 
-    // Each category shows its own movies directly — no cross-row dedup.
-    // (Deduplication was causing categories lower in the list to show 0–2 movies
-    // because earlier rows had already consumed the shared pool.)
-    val displayMovies = remember(rawMovies) { rawMovies.take(15) }
 
     val remainingCount = remember(rawMovies, DataCache.homeCategoryTotalCounts[category.id]) {
         val total = DataCache.homeCategoryTotalCounts[category.id] ?: rawMovies.size.toLong()
@@ -379,10 +459,16 @@ fun CategoryRow(
             modifier = Modifier
                 .padding(vertical = 16.dp)
                 .focusProperties {
-                    // Redirect entry focus to the first item if it's the first time entering
-                    // or after the row has been reset.
                     enter = {
-                        if (isFirstEntry) firstItemRequester else FocusRequester.Default
+                        if (isFirstEntry) {
+                            itemRequesters.getOrNull(0) ?: FocusRequester.Default
+                        } else {
+                            if (isSeeMoreFocusedLast.value) {
+                                seeMoreRequester
+                            } else {
+                                lastFocusedRequester ?: FocusRequester.Default
+                            }
+                        }
                     }
                 }
         ) {
@@ -420,19 +506,20 @@ fun CategoryRow(
                     color = Color.White
                 )
             }
-            LazyRow(
-                state = rowState,
-                contentPadding = PaddingValues(start = 48.dp, end = 48.dp, top = 4.dp, bottom = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                modifier = Modifier
-                    .onFocusChanged { 
-                        isRowFocused = it.hasFocus
-                        if (it.hasFocus) {
-                            onFocusGained()
-                            isFirstEntry = false // Memory mode active until it leaves screen
-                        }
+        LazyRow(
+            state = rowState,
+            contentPadding = PaddingValues(start = 48.dp, end = 48.dp, top = 4.dp, bottom = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            modifier = Modifier
+                .onFocusChanged { 
+                    isRowFocused = it.hasFocus
+                    if (it.hasFocus) {
+                        onFocusGained()
+                        isFirstEntry = false
+                        DataCache.globalLastFocusedKey = rowKey // Mark row as active
                     }
-            ) {
+                }
+        ) {
                 if (displayMovies.isEmpty()) {
                     // Show Shimmer placeholders while loading
                     items(6) {
@@ -443,19 +530,21 @@ fun CategoryRow(
                         items = displayMovies,
                         key = { _, movie -> movie.id }
                     ) { index, movie ->
+                        val fr = itemRequesters.getOrNull(index) ?: remember { FocusRequester() }
                         MovieCard(
                             movie = movie,
                             onClick = { onMovieClick(movie.id) },
                             isFirstInRow = index == 0,
                             screenKey = "home_category_${category.id}",
-                            modifier = if (index == 0) Modifier.focusRequester(firstItemRequester) else Modifier
+                            focusRequester = fr
                         )
                     }
                     item {
                         SeeMoreCard(
                             remainingCount = remainingCount,
                             onClick = { onSeeMoreClick(category.id) },
-                            screenKey = "home_category_${category.id}_seemore"
+                            screenKey = "home_category_${category.id}_seemore",
+                            focusRequester = seeMoreRequester
                         )
                     }
                 }
@@ -471,9 +560,45 @@ fun HistoryRow(
     onMovieClick: (Int) -> Unit,
     parentListState: LazyListState
 ) {
-    val rowState = rememberLazyListState()
-    val firstItemRequester = remember { FocusRequester() }
-    var isFirstEntry by remember { mutableStateOf(true) }
+    val rowKey = "home_history"
+    val savedPosition = DataCache.rowScrollPositions[rowKey] ?: (0 to 0)
+    val rowState = rememberLazyListState(
+        initialFirstVisibleItemIndex = savedPosition.first,
+        initialFirstVisibleItemScrollOffset = savedPosition.second
+    )
+
+    LaunchedEffect(rowState.firstVisibleItemIndex, rowState.firstVisibleItemScrollOffset) {
+        DataCache.rowScrollPositions[rowKey] = rowState.firstVisibleItemIndex to rowState.firstVisibleItemScrollOffset
+    }
+
+    val itemRequesters = remember(movies.size) { List(movies.size) { FocusRequester() } }
+
+    val lastFocusedId = DataCache.lastFocusedMovieId[rowKey]
+    val lastFocusedRequester = remember(lastFocusedId, movies, itemRequesters.size) {
+        val lastIdx = movies.indexOfFirst { it.id == lastFocusedId }
+        if (lastIdx != -1) itemRequesters.getOrNull(lastIdx) else null
+    }
+
+    val isVisible by remember {
+        derivedStateOf {
+            val visibleItems = parentListState.layoutInfo.visibleItemsInfo
+            visibleItems.any { it.index == 1 }
+        }
+    }
+
+    val isDetailsActive = LocalDetailsActive.current
+    var isFirstEntry by remember(isVisible) { mutableStateOf(true) }
+
+    LaunchedEffect(isVisible) {
+        if (!isVisible) {
+            try {
+                rowState.scrollToItem(0, 0)
+            } catch (e: Exception) {}
+            DataCache.rowScrollPositions[rowKey] = 0 to 0
+            DataCache.lastFocusedMovieId.remove("home_history")
+            isFirstEntry = true
+        }
+    }
 
     var isRowFocused by remember { mutableStateOf(false) }
     val titleScale by animateFloatAsState(
@@ -487,7 +612,11 @@ fun HistoryRow(
             .padding(vertical = 16.dp)
             .focusProperties {
                 enter = {
-                    if (isFirstEntry) firstItemRequester else FocusRequester.Default
+                    if (isFirstEntry) {
+                        itemRequesters.getOrNull(0) ?: FocusRequester.Default
+                    } else {
+                        lastFocusedRequester ?: FocusRequester.Default
+                    }
                 }
             }
     ) {
@@ -527,6 +656,7 @@ fun HistoryRow(
                     isRowFocused = it.hasFocus
                     if (it.hasFocus) {
                         isFirstEntry = false
+                        DataCache.globalLastFocusedKey = rowKey
                     }
                 }
         ) {
@@ -535,13 +665,14 @@ fun HistoryRow(
                 key = { _, movie -> "history_${movie.id}" }
             ) { index, movie ->
                 val progressSec = DataCache.currentUser?.watchProgress?.get(movie.id.toString())?.time ?: 0.0
+                val fr = itemRequesters.getOrNull(index) ?: remember { FocusRequester() }
                 HistoryMovieCard(
                     movie = movie,
                     progressSec = progressSec,
                     onClick = { onMovieClick(movie.id) },
                     isFirstInRow = index == 0,
                     screenKey = "home_history",
-                    modifier = if (index == 0) Modifier.focusRequester(firstItemRequester) else Modifier
+                    focusRequester = fr
                 )
             }
         }

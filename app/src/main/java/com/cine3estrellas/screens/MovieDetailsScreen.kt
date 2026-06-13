@@ -52,7 +52,8 @@ import kotlinx.coroutines.delay
 fun MovieDetailsScreen(
     movieId: Int, 
     onMovieClick: (Int) -> Unit,
-    onPlayClick: (Int, String) -> Unit
+    onPlayClick: (Int, String) -> Unit,
+    onClose: () -> Unit = {}
 ) {
     val context = LocalContext.current
     
@@ -80,12 +81,25 @@ fun MovieDetailsScreen(
     val loadingFocusRequester = remember { FocusRequester() }
     val firstOptionRequester = remember { FocusRequester() }
 
-    BackHandler(enabled = showPlayerOptions || showDownloadOptions) {
+    val isDetailsActive = LocalDetailsActive.current
+    val isPlayerOverlayActive = LocalPlayerOverlayActive.current
+    var hasFocusedPlay by remember(movieId) { mutableStateOf(false) }
+
+    // Re-enfocar el botón Play cuando el reproductor overlay se cierra
+    LaunchedEffect(isPlayerOverlayActive) {
+        if (!isPlayerOverlayActive && isDetailsActive) {
+            hasFocusedPlay = false
+        }
+    }
+
+    BackHandler {
         if (showDownloadOptions) {
             showDownloadOptions = false
             showPlayerOptions = true
-        } else {
+        } else if (showPlayerOptions) {
             showPlayerOptions = false
+        } else {
+            onClose()
         }
     }
 
@@ -95,10 +109,15 @@ fun MovieDetailsScreen(
         }
     }
 
-    LaunchedEffect(movie) {
-        if (movie != null) {
-            delay(100)
-            playButtonRequester.requestFocus()
+    LaunchedEffect(movie, isDetailsActive, hasFocusedPlay) {
+        if (movie != null && isDetailsActive && !hasFocusedPlay) {
+            // Reintentamos varias veces para ganarle a la lista de atrás, pero paramos en cuanto se logre
+            repeat(10) {
+                delay(100L * (it + 1))
+                if (isDetailsActive && !hasFocusedPlay) {
+                    playButtonRequester.requestFocus()
+                }
+            }
         }
     }
 
@@ -271,7 +290,10 @@ fun MovieDetailsScreen(
                                 val translationX by animateDpAsState(targetValue = if (isFocused) 10.dp else 0.dp, label = "translationX")
 
                                 Surface(
-                                    onClick = { onPlayClick(movieId, lang) },
+                                    onClick = {
+                                        showPlayerOptions = false
+                                        onPlayClick(movieId, lang)
+                                    },
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .padding(vertical = 3.dp)
@@ -376,7 +398,14 @@ fun MovieDetailsScreen(
                     // Botón Cerrar
                     Box(modifier = Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.TopEnd) {
                         Surface(
-                            onClick = { showPlayerOptions = false; showDownloadOptions = false },
+                            onClick = { 
+                                if (showPlayerOptions || showDownloadOptions) {
+                                    showPlayerOptions = false
+                                    showDownloadOptions = false
+                                } else {
+                                    onClose()
+                                }
+                            },
                             shape = ClickableSurfaceDefaults.shape(CircleShape),
                             colors = ClickableSurfaceDefaults.colors(containerColor = Color.White.copy(alpha = 0.1f), focusedContainerColor = Color.White.copy(alpha = 0.2f)),
                             modifier = Modifier.size(44.dp)
@@ -430,8 +459,20 @@ fun MovieDetailsScreen(
                                 Text(text = m.release_date?.take(4) ?: "", color = Color.White.copy(alpha = 0.9f), style = MaterialTheme.typography.titleMedium)
                                 
                                 if (!m.certification.isNullOrBlank()) {
-                                    Box(modifier = Modifier.border(1.dp, Gold, RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 2.dp)) {
-                                        Text(text = m.certification!!, style = MaterialTheme.typography.labelLarge, color = Gold, fontWeight = FontWeight.Bold)
+                                    val formattedCert = formatCertification(m.certification)
+                                    val isAdult = formattedCert.contains("18")
+                                    Box(
+                                        modifier = Modifier
+                                            .background(if (isAdult) Color.Red else Color.Transparent, RoundedCornerShape(6.dp))
+                                            .border(1.dp, if (isAdult) Color.Red else Gold, RoundedCornerShape(6.dp))
+                                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                                    ) {
+                                        Text(
+                                            text = formattedCert,
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = if (isAdult) Color.White else Gold,
+                                            fontWeight = FontWeight.Bold
+                                        )
                                     }
                                 }
 
@@ -521,7 +562,12 @@ fun MovieDetailsScreen(
                                     onClick = { showPlayerOptions = true },
                                     modifier = Modifier
                                         .focusRequester(playButtonRequester)
-                                        .onFocusChanged { isReproducirFocused = it.isFocused }
+                                        .onFocusChanged { 
+                                            isReproducirFocused = it.isFocused 
+                                            if (it.isFocused) {
+                                                hasFocusedPlay = true
+                                            }
+                                        }
                                         .focusProperties { 
                                             up = FocusRequester.Cancel
                                             left = if (sidebarRequesters.isNotEmpty()) sidebarRequesters[selectedTab] else FocusRequester.Default 

@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -46,6 +47,9 @@ import java.nio.charset.StandardCharsets
 val LocalTabFocusRequesters = compositionLocalOf<List<FocusRequester>> { error("No focus requesters provided") }
 val LocalSelectedTab = compositionLocalOf { 0 }
 val LocalExploreFocusRequester = compositionLocalOf<FocusRequester?> { null }
+val LocalDetailsActive = compositionLocalOf { false }
+val LocalCategoryActive = compositionLocalOf { false }
+val LocalPlayerOverlayActive = compositionLocalOf { false }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -65,6 +69,28 @@ fun MainScreen() {
     val navController = rememberNavController()
     var selectedTab by remember { mutableStateOf(0) }
     var isSidebarFocused by remember { mutableStateOf(false) }
+    
+    // --- STATE FOR MOVIE DETAILS OVERLAY ---
+    var selectedMovieId by remember { mutableStateOf<Int?>(null) }
+    var lastNonNullMovieId by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(selectedMovieId) {
+        if (selectedMovieId != null) {
+            lastNonNullMovieId = selectedMovieId
+        }
+    }
+
+    // --- STATE FOR CATEGORY GRID OVERLAY ---
+    var selectedCategoryId by remember { mutableStateOf<String?>(null) }
+    var lastNonNullCategoryId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(selectedCategoryId) {
+        if (selectedCategoryId != null) {
+            lastNonNullCategoryId = selectedCategoryId
+        }
+    }
+
+    // --- STATE FOR VIDEO PLAYER OVERLAY ---
+    var playerMovieId by remember { mutableStateOf<Int?>(null) }
+    var playerVersion by remember { mutableStateOf<String?>(null) }
     
     var isCheckingSession by remember { mutableStateOf(true) }
     val context = LocalContext.current
@@ -181,15 +207,18 @@ fun MainScreen() {
     )
 
     val startRoute = if (DataCache.isLoggedIn) "inicio" else "login"
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = navBackStackEntry?.destination?.route ?: startRoute
+    val isPlayerOverlayActive = playerMovieId != null
 
     CompositionLocalProvider(
         LocalTabFocusRequesters provides tabFocusRequesters,
         LocalSelectedTab provides selectedTab,
-        LocalExploreFocusRequester provides exploreFocusRequester
+        LocalExploreFocusRequester provides exploreFocusRequester,
+        LocalDetailsActive provides (selectedMovieId != null),
+        LocalCategoryActive provides (selectedCategoryId != null),
+        LocalPlayerOverlayActive provides isPlayerOverlayActive
     ) {
-        val navBackStackEntry by navController.currentBackStackEntryAsState()
-        val currentRoute = navBackStackEntry?.destination?.route ?: startRoute
-
         LaunchedEffect(currentRoute) {
             val index = tabs.indexOfFirst { it.lowercase() == currentRoute }
             if (index != -1) {
@@ -197,11 +226,10 @@ fun MainScreen() {
             }
         }
 
-        val isPlayerActive = currentRoute.startsWith("player")
-        val isDetailsActive = currentRoute.startsWith("details")
-        val isCategoryActive = currentRoute.startsWith("category")
+        val isDetailsActive = selectedMovieId != null
+        val isCategoryActive = selectedCategoryId != null
         val isLoginActive = currentRoute == "login"
-        val hideSidebar = isPlayerActive || isDetailsActive || isCategoryActive || isLoginActive
+        val hideSidebar = isPlayerOverlayActive || isDetailsActive || isCategoryActive || isLoginActive
 
         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
             // Capa del contenido principal (NavHost)
@@ -209,7 +237,11 @@ fun MainScreen() {
                 modifier = Modifier
                     .fillMaxSize()
                     .focusProperties {
-                        if (!hideSidebar && currentRoute != "explorar") {
+                        if (selectedMovieId != null || selectedCategoryId != null) {
+                            // BLOQUEO TOTAL DE FOCO: Si hay un detalle o categoría abierta,
+                            // no permitimos que el foco entre o permanezca aquí.
+                            canFocus = false
+                        } else if (!hideSidebar && currentRoute != "explorar") {
                             left = tabFocusRequesters[selectedTab]
                         }
                     }
@@ -232,46 +264,38 @@ fun MainScreen() {
                     composable("inicio") { 
                         Box(modifier = Modifier.padding(start = 80.dp)) {
                             HomeScreen(
-                                onMovieClick = { id -> navController.navigate("details/$id") },
-                                onSeeMoreClick = { categoryId -> navController.navigate("category/$categoryId") }
+                                onMovieClick = { id -> selectedMovieId = id },
+                                onSeeMoreClick = { categoryId -> selectedCategoryId = categoryId }
                             )
                         }
                     }
                     composable("buscar") { 
                         Box(modifier = Modifier.padding(start = 80.dp)) { 
-                            SearchScreen(onMovieClick = { id -> navController.navigate("details/$id") }) 
+                            SearchScreen(onMovieClick = { id -> selectedMovieId = id })
                         }
                     }
                     composable("explorar") {
                         Box(modifier = Modifier.padding(start = 80.dp)) { 
-                            ExploreScreen(onMovieClick = { id -> navController.navigate("details/$id") }) 
+                            ExploreScreen(onMovieClick = { id -> selectedMovieId = id })
                         }
                     }
                     composable("favoritos") { 
                         Box(modifier = Modifier.padding(start = 80.dp)) { 
-                            FavoritesScreen(onMovieClick = { id -> navController.navigate("details/$id") }) 
-                        }
-                    }
-                    composable("category/{categoryId}") { backStackEntry ->
-                        val categoryId = backStackEntry.arguments?.getString("categoryId")
-                        categoryId?.let {
-                            CategoryGridScreen(
-                                categoryId = it,
-                                onMovieClick = { id -> navController.navigate("details/$id") },
-                                onBack = { navController.popBackStack() }
-                            )
+                            FavoritesScreen(onMovieClick = { id -> selectedMovieId = id })
                         }
                     }
                     composable("details/{movieId}") { backStackEntry ->
+                        // This route is now secondary as we use overlay, 
+                        // but we keep it for backward compatibility or direct deep links.
                         val movieId = backStackEntry.arguments?.getString("movieId")?.toIntOrNull()
-                        movieId?.let { 
+                        movieId?.let {
                             MovieDetailsScreen(
-                                movieId = it, 
-                                onMovieClick = { id -> navController.navigate("details/$id") },
-                                onPlayClick = { id, version -> 
-                                    navController.navigate("player/$id/$version") 
+                                movieId = it,
+                                onMovieClick = { id -> selectedMovieId = id },
+                                onPlayClick = { mid, version ->
+                                    navController.navigate("player/$mid/$version")
                                 }
-                            ) 
+                            )
                         }
                     }
                     composable(
@@ -290,7 +314,7 @@ fun MainScreen() {
 
             // Capa de la Sidebar (Overlay)
             androidx.compose.animation.AnimatedVisibility(
-                visible = !hideSidebar,
+                visible = !hideSidebar && selectedMovieId == null,
                 enter = fadeIn(tween(400)),
                 exit = fadeOut(tween(400))
             ) {
@@ -479,6 +503,105 @@ fun MainScreen() {
                                     }
                             )
                         }
+                    }
+                }
+            }
+
+            // --- CATEGORY GRID OVERLAY ---
+            androidx.compose.animation.AnimatedVisibility(
+                visible = selectedCategoryId != null,
+                enter = fadeIn(tween(300)) + expandIn(expandFrom = Alignment.Center),
+                exit = fadeOut(tween(300)) + shrinkOut(shrinkTowards = Alignment.Center),
+                modifier = Modifier.zIndex(90f)
+            ) {
+                lastNonNullCategoryId?.let { id ->
+                    Box(modifier = Modifier
+                        .fillMaxSize()
+                        .zIndex(90f)
+                        .focusProperties {
+                            if (selectedMovieId != null || isPlayerOverlayActive) {
+                                canFocus = false
+                            } else {
+                                enter = { FocusRequester.Default }
+                            }
+                        }
+                    ) {
+                        CategoryGridScreen(
+                            categoryId = id,
+                            onMovieClick = { selectedMovieId = it },
+                            onBack = {
+                                DataCache.categoryIdToRestore = selectedCategoryId
+                                selectedCategoryId = null
+                            }
+                        )
+                    }
+                }
+            }
+
+            // --- MOVIE DETAILS OVERLAY ---
+            androidx.compose.animation.AnimatedVisibility(
+                visible = selectedMovieId != null,
+                enter = fadeIn(tween(300)) + expandIn(expandFrom = Alignment.Center),
+                exit = fadeOut(tween(300)) + shrinkOut(shrinkTowards = Alignment.Center),
+                modifier = Modifier.zIndex(100f)
+            ) {
+                lastNonNullMovieId?.let { id ->
+                    Box(modifier = Modifier
+                        .fillMaxSize()
+                        .zIndex(100f)
+                        .focusProperties {
+                            if (isPlayerOverlayActive) {
+                                // Bloquear foco de la ficha mientras el player esté encima
+                                canFocus = false
+                            } else {
+                                // Capturamos el foco para que no se escape a la lista de atrás
+                                enter = { FocusRequester.Default }
+                            }
+                        }
+                    ) {
+                        MovieDetailsScreen(
+                            movieId = id,
+                            onMovieClick = { selectedMovieId = it },
+                            onPlayClick = { mid, version ->
+                                playerMovieId = mid
+                                playerVersion = version
+                            },
+                            onClose = {
+                                DataCache.movieIdToRestore = selectedMovieId
+                                DataCache.keyToRestore = DataCache.globalLastFocusedKey
+                                selectedMovieId = null
+                                DataCache.focusRestorationTrigger++
+                            }
+                        )
+                    }
+                }
+            }
+
+            // --- VIDEO PLAYER OVERLAY ---
+            androidx.compose.animation.AnimatedVisibility(
+                visible = isPlayerOverlayActive,
+                enter = fadeIn(tween(300)),
+                exit = fadeOut(tween(300)),
+                modifier = Modifier.zIndex(200f)
+            ) {
+                Box(modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(200f)
+                    .focusProperties {
+                        enter = { FocusRequester.Default }
+                    }
+                ) {
+                    val pid = playerMovieId
+                    val pver = playerVersion
+                    if (pid != null && pver != null) {
+                        VideoPlayerScreen(
+                            movieId = pid,
+                            version = pver,
+                            onBack = {
+                                playerMovieId = null
+                                playerVersion = null
+                            }
+                        )
                     }
                 }
             }

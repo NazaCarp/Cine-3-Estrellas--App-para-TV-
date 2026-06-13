@@ -63,6 +63,7 @@ private val Slate500 = Color(0xFF64748B)
 @OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun ExploreScreen(onMovieClick: (Int) -> Unit) {
+    val isDetailsActive = LocalDetailsActive.current
     val exploreFocusRequester = LocalExploreFocusRequester.current
     // Using DataCache to preserve state across navigation
     var selectedGenre by remember { mutableStateOf(DataCache.exploreSelectedGenre) }
@@ -436,23 +437,15 @@ fun ExploreScreen(onMovieClick: (Int) -> Unit) {
                         }
                     } else if (movies.isNotEmpty()) {
                         // Actual Results Grid
-                        val focusRequesters = remember { 
-                            val list = mutableStateListOf<FocusRequester>()
-                            repeat(movies.size) { list.add(FocusRequester()) }
-                            list
-                        }
-                        LaunchedEffect(movies.size) {
-                            while (focusRequesters.size < movies.size) {
-                                focusRequesters.add(FocusRequester())
-                            }
-                        }
+                        val focusRequesters = remember(movies.size) { List(movies.size) { FocusRequester() } }
                         
                         LazyVerticalGrid(
                             columns = GridCells.Adaptive(itemWidth),
                             horizontalArrangement = Arrangement.spacedBy(spacing),
                             verticalArrangement = Arrangement.spacedBy(spacing),
                             contentPadding = PaddingValues(top = 16.dp, bottom = 32.dp),
-                            modifier = Modifier.fillMaxSize()
+                            modifier = Modifier
+                                .fillMaxSize()
                         ) {
                             itemsIndexed(movies) { index, movie ->
                                 if (index >= movies.size - 10 && !isLoading && movies.size < totalCount) {
@@ -468,8 +461,8 @@ fun ExploreScreen(onMovieClick: (Int) -> Unit) {
                                     onClick = { onMovieClick(movie.id) }, 
                                     cardWidth = itemWidth,
                                     screenKey = "explore",
-                                    focusRequester = if (index < focusRequesters.size) focusRequesters[index] else remember { FocusRequester() },
-                                    nextFocusRequester = if (index < focusRequesters.size - 1) focusRequesters[index + 1] else null,
+                                    focusRequester = focusRequesters.getOrNull(index) ?: remember { FocusRequester() },
+                                    nextFocusRequester = focusRequesters.getOrNull(index + 1),
                                     leftFocus = if (isFirstInColumn) exploreFocusRequester else null
                                 )
                             }
