@@ -31,6 +31,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import com.cine3estrellas.R
+import com.cine3estrellas.LocalTabContentFocusRequesters
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
@@ -50,21 +51,38 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.ChevronRight
 
 // Using DataCache instead of local HomeCache
 
 @OptIn(ExperimentalFoundationApi::class)
 private val NoScrollBringIntoViewSpec = object : BringIntoViewSpec {
-    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float = 0f
+    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float =
+        0f
 }
 
 @OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
-fun HomeScreen(onMovieClick: (Int) -> Unit, onSeeMoreClick: (String) -> Unit) {
+fun HomeScreen(
+    onMovieClick: (Int) -> Unit,
+    onSeeMoreClick: (String) -> Unit,
+    onSeeMoreHistory: () -> Unit,
+    heroDownFocus: FocusRequester? = null
+) {
+    val sidebarRequesters = LocalTabFocusRequesters.current
+    val selectedTab = LocalSelectedTab.current
+    val sidebarRequester = if (sidebarRequesters.isNotEmpty() && selectedTab in sidebarRequesters.indices) {
+        sidebarRequesters[selectedTab]
+    } else null
+
     var errorMessage by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val loadingFocusRequester = remember { FocusRequester() }
     val heroFocusRequester = remember { FocusRequester() }
+    val seeMoreHistoryRequester = remember { FocusRequester() }
+
+    val contentRequesters = LocalTabContentFocusRequesters.current
+    val homeEntryFocusRequester = contentRequesters.getOrNull(1) ?: remember { FocusRequester() }
 
     // Pulse animation for loading logo
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
@@ -94,23 +112,26 @@ fun HomeScreen(onMovieClick: (Int) -> Unit, onSeeMoreClick: (String) -> Unit) {
             return@LaunchedEffect
         }
         try {
-            val response = SupabaseManager.client.from("movies")
-                .select {
-                    filter {
-                        isIn("id", historyIds)
-                    }
-                }.decodeList<Movie>()
-            val ordered = historyIds.mapNotNull { id -> response.find { it.id == id } }
-            historyMovies = ordered
+            val missingIds = historyIds.filter { !DataCache.movieCardCache.containsKey(it) }
+            if (missingIds.isNotEmpty()) {
+                val fetched = SupabaseManager.client.from("movies")
+                    .select(columns = Columns.list("id", "title", "poster_path", "backdrop_path", "vote_average", "genre_ids", "release_date")) {
+                        filter {
+                            isIn("id", missingIds)
+                        }
+                    }.decodeList<Movie>()
+                DataCache.cacheMovies(fetched)
+            }
+            historyMovies = historyIds.mapNotNull { id -> DataCache.movieCardCache[id] }
         } catch (e: Exception) {
             e.printStackTrace()
         }
     }
 
-    fun loadHomeData() {
+    fun loadHomeData(force: Boolean = false) {
         errorMessage = null
         scope.launch {
-            if (DataCache.isHomeInitialLoaded) return@launch
+            if (!force && DataCache.isHomeInitialLoaded) return@launch
 
             try {
                 val response = SupabaseManager.fetchTvHomeData()
@@ -120,14 +141,17 @@ fun HomeScreen(onMovieClick: (Int) -> Unit, onSeeMoreClick: (String) -> Unit) {
 
                 // Reuse popular movies from "Lo Más Visto" category for the Hero section
                 // This avoids an extra API call.
-                val popularCategory = response.categories.find { 
-                    it.sort_by == "popularity" || it.id == "popular" || it.name.contains("Más Visto", ignoreCase = true) 
+                val popularCategory = response.categories.find {
+                    it.sort_by == "popularity" || it.id == "popular" || it.name.contains(
+                        "Más Visto",
+                        ignoreCase = true
+                    )
                 }
-                
+
                 if (popularCategory != null && popularCategory.movies.isNotEmpty()) {
                     val baseMovies = popularCategory.movies.take(10)
                     DataCache.homeHeroMovies = baseMovies
-                    
+
                     // Enrich Hero movies with full metadata (overview, runtime, etc.) from TMDB
                     scope.launch {
                         val enrichedMovies = baseMovies.map { movie ->
@@ -139,9 +163,12 @@ fun HomeScreen(onMovieClick: (Int) -> Unit, onSeeMoreClick: (String) -> Unit) {
                                             overview = tmdbDetails.overview ?: movie.overview,
                                             runtime = tmdbDetails.runtime ?: movie.runtime,
                                             genres = tmdbDetails.genres ?: movie.genres,
-                                            backdrop_path = tmdbDetails.backdrop_path ?: movie.backdrop_path,
-                                            vote_average = tmdbDetails.vote_average ?: movie.vote_average,
-                                            certification = tmdbDetails.certification ?: movie.certification
+                                            backdrop_path = tmdbDetails.backdrop_path
+                                                ?: movie.backdrop_path,
+                                            vote_average = tmdbDetails.vote_average
+                                                ?: movie.vote_average,
+                                            certification = tmdbDetails.certification
+                                                ?: movie.certification
                                         )
                                     } else movie
                                 } catch (e: Exception) {
@@ -170,6 +197,7 @@ fun HomeScreen(onMovieClick: (Int) -> Unit, onSeeMoreClick: (String) -> Unit) {
                 }
                 response.categories.forEach { tvCat ->
                     DataCache.homeCategoryMovies[tvCat.id] = tvCat.movies
+                    DataCache.cacheMovies(tvCat.movies)
                     // Use the exact count from the server (Supabase COUNT query).
                     // Fallback to movie list size only if the server didn't return a count.
                     val count = tvCat.total_count ?: tvCat.movies.size.toLong()
@@ -192,17 +220,47 @@ fun HomeScreen(onMovieClick: (Int) -> Unit, onSeeMoreClick: (String) -> Unit) {
         loadHomeData()
     }
 
+    // Improved Focus Management for loading transition (Iteration 3)
+    LaunchedEffect(DataCache.isHomeInitialLoaded) {
+        if (!DataCache.isHomeInitialLoaded) {
+            // While loading, be extremely aggressive in claiming focus 
+            // to suppress any system-initiated focus shifts to the Sidebar.
+            repeat(15) {
+                try {
+                    loadingFocusRequester.requestFocus()
+                } catch (e: Exception) {}
+                delay(100)
+            }
+        } else {
+            // Loading finished. Transfer focus to content.
+            // We wait to ensure the HeroSection and its buttons are ready.
+            repeat(5) {
+                delay(150)
+                try {
+                    homeEntryFocusRequester.requestFocus()
+                } catch (e: Exception) {}
+            }
+            // Once focus is settled in Home, unlock the sidebar for fluid navigation
+            DataCache.isTabChangeLocked = false
+        }
+    }
+
     if (errorMessage != null && !DataCache.isHomeInitialLoaded) {
         ErrorScreen(
             message = errorMessage!!,
-            onRetry = { loadHomeData() }
+            onRetry = { loadHomeData(force = true) }
         )
     } else if (DataCache.homeCategories.isEmpty() && !DataCache.isHomeInitialLoaded) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .focusRequester(loadingFocusRequester)
-                .focusable(),
+                .focusable()
+                .onFocusChanged {
+                    if (it.isFocused) {
+                        // Keep focus here while loading
+                    }
+                },
             contentAlignment = androidx.compose.ui.Alignment.Center
         ) {
             Column(
@@ -238,99 +296,165 @@ fun HomeScreen(onMovieClick: (Int) -> Unit, onSeeMoreClick: (String) -> Unit) {
             }
         }
     } else {
-        val savedHomePosition = DataCache.homeScrollPosition
-        val listState = rememberLazyListState(
-            initialFirstVisibleItemIndex = savedHomePosition.first,
-            initialFirstVisibleItemScrollOffset = savedHomePosition.second
-        )
+        Box(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier
+                    .size(1.dp)
+                    .focusRequester(homeEntryFocusRequester)
+                    .onFocusChanged {
+                        if (it.isFocused) {
+                            val lastKey = DataCache.lastHomeFocusedKey
+                            if (lastKey != null) {
+                                // IMPORTANT: Sync global key so components recognize they should restore focus
+                                DataCache.globalLastFocusedKey = lastKey
 
-        // Save vertical scroll position when it changes
-        LaunchedEffect(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset) {
-            DataCache.homeScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
-        }
+                                if (lastKey == "home_hero") {
+                                    heroFocusRequester.requestFocus()
+                                } else if (lastKey == "home_history_seemore") {
+                                    seeMoreHistoryRequester.requestFocus()
+                                } else {
+                                    DataCache.focusRestorationTrigger++
+                                }
+                            } else {
+                                heroFocusRequester.requestFocus()
+                            }
+                        }
+                    }
+                    .focusable()
+            )
 
-        var isHeroFocused by remember { mutableStateOf(false) }
-        var focusTrigger by remember { mutableStateOf(0) }
+            val savedHomePosition = DataCache.homeScrollPosition
+            val listState = rememberLazyListState(
+                initialFirstVisibleItemIndex = savedHomePosition.first,
+                initialFirstVisibleItemScrollOffset = savedHomePosition.second
+            )
 
-        // Check if we are returning from a movie detail and restoring focus
-        val isRestoringFocus = remember {
-            DataCache.globalLastFocusedKey != null && DataCache.globalLastFocusedKey!!.startsWith("home_")
-        }
-
-        LaunchedEffect(isHeroFocused) {
-            if (isHeroFocused) {
-                listState.scrollToItem(0, 0)
+            // Save vertical scroll position when it changes
+            LaunchedEffect(
+                listState.firstVisibleItemIndex,
+                listState.firstVisibleItemScrollOffset
+            ) {
+                DataCache.homeScrollPosition =
+                    listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
             }
-        }
 
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            state = listState
-        ) {
-            item(key = "hero_section") {
-                @OptIn(ExperimentalFoundationApi::class)
-                val responder = remember {
-                    object : BringIntoViewResponder {
-                        @Suppress("DEPRECATION")
-                        override suspend fun bringChildIntoView(localRect: () -> Rect?) {
-                            // Swallow internal requests to prevent centering buttons
-                        }
-                        @Suppress("DEPRECATION")
-                        override fun calculateRectForParent(localRect: Rect): Rect {
-                            // Always request the top of the Hero to be visible.
-                            // Since Hero is at the top of the list, this prevents downward scrolling.
-                            return Rect(0f, 0f, localRect.width, 0f)
-                        }
-                    }
-                }
+            var isHeroFocused by remember { mutableStateOf(false) }
+            var focusTrigger by remember { mutableStateOf(0) }
 
-                @OptIn(ExperimentalFoundationApi::class)
-                CompositionLocalProvider(LocalBringIntoViewSpec provides NoScrollBringIntoViewSpec) {
-                    Box(modifier = Modifier
-                        .bringIntoViewResponder(responder)
-                        .onFocusChanged {
-                        isHeroFocused = it.hasFocus
-                        if (it.hasFocus) {
-                            initialFocusRequested = true
-                        }
-                    }) {
-                        HeroSection(
-                            movies = DataCache.homeHeroMovies,
-                            onMovieClick = { onMovieClick(it.id) },
-                            onFocused = {
-                                focusTrigger++
-                                initialFocusRequested = true
-                            },
-                            initialFocusRequester = if (isRestoringFocus || initialFocusRequested) null else heroFocusRequester,
-                            screenKey = "home_hero"
-                        )
-                    }
+            // Check if we are returning from a movie detail and restoring focus
+            val isRestoringFocus = remember {
+                DataCache.globalLastFocusedKey != null && DataCache.globalLastFocusedKey!!.startsWith(
+                    "home_"
+                )
+            }
+
+            LaunchedEffect(isHeroFocused) {
+                if (isHeroFocused) {
+                    listState.scrollToItem(0, 0)
                 }
             }
 
-            if (historyMovies.isNotEmpty()) {
-                item(key = "history_section") {
-                    HistoryRow(
-                        movies = historyMovies,
-                        onMovieClick = onMovieClick,
-                        parentListState = listState
+            // Handle focus restoration when returning from overlays
+            LaunchedEffect(DataCache.focusRestorationTrigger) {
+                if (DataCache.focusRestorationTrigger > 0) {
+                    val key = DataCache.lastHomeFocusedKey
+                    if (key == "home_history_seemore") {
+                        try {
+                            seeMoreHistoryRequester.requestFocus()
+                        } catch (e: Exception) {
+                        }
+                    }
+                }
+            }
+
+            val deduplicatedCategoryMovies by remember {
+                derivedStateOf {
+                    computeDeduplicatedCarousels(
+                        DataCache.homeCategories,
+                        DataCache.homeCategoryMovies
                     )
                 }
             }
 
-            itemsIndexed(
-                items = DataCache.homeCategories,
-                key = { _, category -> category.id }
-            ) { index, category ->
-                CategoryRow(
-                    category = category,
-                    rowIndex = index,
-                    hasHistory = historyMovies.isNotEmpty(),
-                    onMovieClick = onMovieClick,
-                    onSeeMoreClick = onSeeMoreClick,
-                    onFocusGained = { initialFocusRequested = true },
-                    parentListState = listState
-                )
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                state = listState
+            ) {
+                item(key = "hero_section") {
+                    @OptIn(ExperimentalFoundationApi::class)
+                    val responder = remember {
+                        object : BringIntoViewResponder {
+                            @Suppress("DEPRECATION")
+                            override suspend fun bringChildIntoView(localRect: () -> Rect?) {
+                                // Swallow internal requests to prevent centering buttons
+                            }
+
+                            @Suppress("DEPRECATION")
+                            override fun calculateRectForParent(localRect: Rect): Rect {
+                                // Always request the top of the Hero to be visible.
+                                // Since Hero is at the top of the list, this prevents downward scrolling.
+                                return Rect(0f, 0f, localRect.width, 0f)
+                            }
+                        }
+                    }
+
+                    @OptIn(ExperimentalFoundationApi::class)
+                    CompositionLocalProvider(LocalBringIntoViewSpec provides NoScrollBringIntoViewSpec) {
+                        Box(
+                            modifier = Modifier
+                                .bringIntoViewResponder(responder)
+                                .onFocusChanged {
+                                    isHeroFocused = it.hasFocus
+                                    if (it.hasFocus) {
+                                        initialFocusRequested = true
+                                    }
+                                }) {
+                            HeroSection(
+                                movies = DataCache.homeHeroMovies,
+                                onMovieClick = { onMovieClick(it.id) },
+                                onFocused = {
+                                    focusTrigger++
+                                    initialFocusRequested = true
+                                    DataCache.lastHomeFocusedKey = "home_hero"
+                                },
+                                heroFocusRequester = heroFocusRequester,
+                                requestInitialFocus = !isRestoringFocus && !initialFocusRequested,
+                                downFocus = if (historyMovies.isNotEmpty()) seeMoreHistoryRequester else null,
+                                screenKey = "home_hero"
+                            )
+                        }
+                    }
+                }
+
+                if (historyMovies.isNotEmpty()) {
+                    item(key = "history_section") {
+                        HistoryRow(
+                            movies = historyMovies,
+                            onMovieClick = onMovieClick,
+                            onSeeMoreClick = onSeeMoreHistory,
+                            parentListState = listState,
+                            seeMoreRequester = seeMoreHistoryRequester,
+                            heroFocusRequester = heroFocusRequester,
+                            leftFocus = sidebarRequester
+                        )
+                    }
+                }
+
+                itemsIndexed(
+                    items = DataCache.homeCategories,
+                    key = { _, category -> category.id }
+                ) { index, category ->
+                    CategoryRow(
+                        category = category,
+                        rowIndex = index,
+                        hasHistory = historyMovies.isNotEmpty(),
+                        displayMovies = deduplicatedCategoryMovies[category.id] ?: emptyList(),
+                        onMovieClick = onMovieClick,
+                        onSeeMoreClick = onSeeMoreClick,
+                        onFocusGained = { initialFocusRequested = true },
+                        parentListState = listState
+                    )
+                }
             }
         }
     }
@@ -342,6 +466,7 @@ fun CategoryRow(
     category: HomeCategory,
     rowIndex: Int,
     hasHistory: Boolean,
+    displayMovies: List<Movie>,
     onMovieClick: (Int) -> Unit,
     onSeeMoreClick: (String) -> Unit,
     onFocusGained: () -> Unit,
@@ -349,8 +474,7 @@ fun CategoryRow(
 ) {
     val rowKey = "home_category_${category.id}"
     val rawMovies = DataCache.homeCategoryMovies[category.id] ?: emptyList()
-    val displayMovies = remember(rawMovies) { rawMovies.take(15) }
-    
+
     // Restore scroll position from cache
     val savedPosition = DataCache.rowScrollPositions[rowKey] ?: (0 to 0)
     val rowState = rememberLazyListState(
@@ -360,10 +484,12 @@ fun CategoryRow(
 
     // Save scroll position when it changes
     LaunchedEffect(rowState.firstVisibleItemIndex, rowState.firstVisibleItemScrollOffset) {
-        DataCache.rowScrollPositions[rowKey] = rowState.firstVisibleItemIndex to rowState.firstVisibleItemScrollOffset
+        DataCache.rowScrollPositions[rowKey] =
+            rowState.firstVisibleItemIndex to rowState.firstVisibleItemScrollOffset
     }
 
-    val itemRequesters = remember(displayMovies.size) { List(displayMovies.size) { FocusRequester() } }
+    val itemRequesters =
+        remember(displayMovies.size) { List(displayMovies.size) { FocusRequester() } }
     val seeMoreRequester = remember { FocusRequester() }
 
     val lastFocusedId = DataCache.lastFocusedMovieId[rowKey]
@@ -373,7 +499,7 @@ fun CategoryRow(
     }
 
     val isSeeMoreFocusedLast = remember {
-        derivedStateOf { DataCache.globalLastFocusedKey == "${rowKey}_seemore" }
+        derivedStateOf { DataCache.lastHomeFocusedKey == "${rowKey}_seemore" }
     }
 
     val isVisible by remember {
@@ -391,7 +517,8 @@ fun CategoryRow(
         if (!isVisible) {
             try {
                 rowState.scrollToItem(0, 0)
-            } catch (e: Exception) {}
+            } catch (e: Exception) {
+            }
             DataCache.rowScrollPositions[rowKey] = 0 to 0
             DataCache.lastFocusedMovieId.remove("home_category_${category.id}")
             isFirstEntry = true
@@ -399,6 +526,8 @@ fun CategoryRow(
     }
 
     val isDetailsActive = LocalDetailsActive.current
+    val isCategoryActive = LocalCategoryActive.current
+    val isPlayerActive = LocalPlayerOverlayActive.current
 
     var isRowFocused by remember { mutableStateOf(false) }
     val titleScale by animateFloatAsState(
@@ -407,52 +536,13 @@ fun CategoryRow(
         label = "category_title_scale"
     )
 
-
-
-    val remainingCount = remember(rawMovies, DataCache.homeCategoryTotalCounts[category.id]) {
-        val total = DataCache.homeCategoryTotalCounts[category.id] ?: rawMovies.size.toLong()
-        (total - displayMovies.size).coerceAtLeast(0).toInt()
-    }
-
-    // Only fetch movies for this category if they are not already cached
-    LaunchedEffect(category.id) {
-        if (rawMovies.isEmpty()) {
-            try {
-                val response = SupabaseManager.client.from("movies")
-                    .select {
-                        filter {
-                            val genres = category.genre_ids
-                            val keywords = category.keywords
-
-                            if (!genres.isNullOrEmpty()) {
-                                overlaps("genre_ids", genres)
-                            }
-
-                            if (!keywords.isNullOrEmpty()) {
-                                overlaps("keywords", keywords)
-                            }
-
-                            val rating = category.min_rating
-                            if (rating != null && rating > 0.0) {
-                                gte("vote_average", rating)
-                            }
-                        }
-                        val sortCol = if (category.sort_by.isNullOrBlank()) "created_at" else category.sort_by
-                        order(sortCol, Order.DESCENDING)
-                        // Use this.count() to avoid naming conflict with the property
-                        this.count(Count.EXACT)
-                        limit(100)
-                    }
-
-                val fetchedMovies = response.decodeList<Movie>()
-                DataCache.homeCategoryMovies[category.id] = fetchedMovies
-                // Save the absolute total from DB
-                DataCache.homeCategoryTotalCounts[category.id] = response.countOrNull() ?: fetchedMovies.size.toLong()
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+    val remainingCount =
+        remember(rawMovies, DataCache.homeCategoryTotalCounts[category.id], displayMovies.size) {
+            val total = DataCache.homeCategoryTotalCounts[category.id] ?: rawMovies.size.toLong()
+            (total - displayMovies.size).coerceAtLeast(0).toInt()
         }
-    }
+
+
 
     if (displayMovies.isNotEmpty() || rawMovies.isEmpty()) {
         Column(
@@ -506,20 +596,26 @@ fun CategoryRow(
                     color = Color.White
                 )
             }
-        LazyRow(
-            state = rowState,
-            contentPadding = PaddingValues(start = 48.dp, end = 48.dp, top = 4.dp, bottom = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            modifier = Modifier
-                .onFocusChanged { 
-                    isRowFocused = it.hasFocus
-                    if (it.hasFocus) {
-                        onFocusGained()
-                        isFirstEntry = false
-                        DataCache.globalLastFocusedKey = rowKey // Mark row as active
+            LazyRow(
+                state = rowState,
+                contentPadding = PaddingValues(
+                    start = 48.dp,
+                    end = 48.dp,
+                    top = 4.dp,
+                    bottom = 12.dp
+                ),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier
+                    .onFocusChanged {
+                        isRowFocused = it.hasFocus
+                        if (it.hasFocus && !isDetailsActive && !isCategoryActive && !isPlayerActive) {
+                            onFocusGained()
+                            isFirstEntry = false
+                            DataCache.globalLastFocusedKey = rowKey // Mark row as active
+                            DataCache.lastHomeFocusedKey = rowKey
+                        }
                     }
-                }
-        ) {
+            ) {
                 if (displayMovies.isEmpty()) {
                     // Show Shimmer placeholders while loading
                     items(6) {
@@ -528,7 +624,7 @@ fun CategoryRow(
                 } else {
                     itemsIndexed(
                         items = displayMovies,
-                        key = { _, movie -> movie.id }
+                        key = { index, movie -> "${category.id}_${movie.id}_$index" }
                     ) { index, movie ->
                         val fr = itemRequesters.getOrNull(index) ?: remember { FocusRequester() }
                         MovieCard(
@@ -558,7 +654,11 @@ fun CategoryRow(
 fun HistoryRow(
     movies: List<Movie>,
     onMovieClick: (Int) -> Unit,
-    parentListState: LazyListState
+    onSeeMoreClick: () -> Unit,
+    parentListState: LazyListState,
+    seeMoreRequester: FocusRequester,
+    heroFocusRequester: FocusRequester,
+    leftFocus: FocusRequester? = null
 ) {
     val rowKey = "home_history"
     val savedPosition = DataCache.rowScrollPositions[rowKey] ?: (0 to 0)
@@ -568,7 +668,8 @@ fun HistoryRow(
     )
 
     LaunchedEffect(rowState.firstVisibleItemIndex, rowState.firstVisibleItemScrollOffset) {
-        DataCache.rowScrollPositions[rowKey] = rowState.firstVisibleItemIndex to rowState.firstVisibleItemScrollOffset
+        DataCache.rowScrollPositions[rowKey] =
+            rowState.firstVisibleItemIndex to rowState.firstVisibleItemScrollOffset
     }
 
     val itemRequesters = remember(movies.size) { List(movies.size) { FocusRequester() } }
@@ -579,6 +680,10 @@ fun HistoryRow(
         if (lastIdx != -1) itemRequesters.getOrNull(lastIdx) else null
     }
 
+    val isSeeMoreFocusedLast = remember {
+        derivedStateOf { DataCache.lastHomeFocusedKey == "${rowKey}_seemore" }
+    }
+
     val isVisible by remember {
         derivedStateOf {
             val visibleItems = parentListState.layoutInfo.visibleItemsInfo
@@ -587,13 +692,16 @@ fun HistoryRow(
     }
 
     val isDetailsActive = LocalDetailsActive.current
+    val isCategoryActive = LocalCategoryActive.current
+    val isPlayerActive = LocalPlayerOverlayActive.current
     var isFirstEntry by remember(isVisible) { mutableStateOf(true) }
 
     LaunchedEffect(isVisible) {
         if (!isVisible) {
             try {
                 rowState.scrollToItem(0, 0)
-            } catch (e: Exception) {}
+            } catch (e: Exception) {
+            }
             DataCache.rowScrollPositions[rowKey] = 0 to 0
             DataCache.lastFocusedMovieId.remove("home_history")
             isFirstEntry = true
@@ -615,38 +723,116 @@ fun HistoryRow(
                     if (isFirstEntry) {
                         itemRequesters.getOrNull(0) ?: FocusRequester.Default
                     } else {
-                        lastFocusedRequester ?: FocusRequester.Default
+                        if (isSeeMoreFocusedLast.value) {
+                            seeMoreRequester
+                        } else {
+                            lastFocusedRequester ?: FocusRequester.Default
+                        }
                     }
                 }
             }
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
             modifier = Modifier
-                .padding(start = 48.dp, bottom = 6.dp)
-                .graphicsLayer {
-                    scaleX = titleScale
-                    scaleY = titleScale
-                    transformOrigin = TransformOrigin(0f, 0.5f)
-                }
+                .fillMaxWidth()
+                .padding(start = 48.dp, end = 48.dp, bottom = 6.dp)
         ) {
-            Icon(
-                imageVector = Icons.Default.PlayArrow,
-                contentDescription = null,
-                tint = Color(0xFF60A5FA),
-                modifier = Modifier.size(14.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = "CONTINUAR VIENDO",
-                style = MaterialTheme.typography.labelMedium.copy(
-                    fontWeight = FontWeight.Black,
-                    letterSpacing = 2.sp
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .graphicsLayer {
+                        scaleX = titleScale
+                        scaleY = titleScale
+                        transformOrigin = TransformOrigin(0f, 0.5f)
+                    }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.PlayArrow,
+                    contentDescription = null,
+                    tint = Color(0xFF60A5FA),
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "CONTINUAR VIENDO",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 2.sp
+                    ),
+                    color = Color(0xFF60A5FA)
+                )
+            }
+
+            // Pastilla VER TODO
+            var isSeeMoreFocused by remember { mutableStateOf(false) }
+            Surface(
+                onClick = onSeeMoreClick,
+                modifier = Modifier
+                    .focusRequester(seeMoreRequester)
+                    .onFocusChanged {
+                        isSeeMoreFocused = it.isFocused
+                        if (it.isFocused && !isDetailsActive && !isCategoryActive && !isPlayerActive) {
+                            DataCache.globalLastFocusedKey = "${rowKey}_seemore"
+                            DataCache.lastHomeFocusedKey = "${rowKey}_seemore"
+                        }
+                    }
+                    .focusProperties {
+                        up = heroFocusRequester
+                        down = if (isFirstEntry) {
+                            if (itemRequesters.isNotEmpty()) itemRequesters[0] else FocusRequester.Default
+                        } else {
+                            lastFocusedRequester
+                                ?: (if (itemRequesters.isNotEmpty()) itemRequesters[0] else FocusRequester.Default)
+                        }
+                        left = FocusRequester.Cancel
+                        right = FocusRequester.Cancel
+                    },
+                scale = ClickableSurfaceDefaults.scale(focusedScale = 1.1f),
+                colors = ClickableSurfaceDefaults.colors(
+                    containerColor = Color.White.copy(alpha = 0.05f),
+                    focusedContainerColor = Color(0xFF60A5FA).copy(alpha = 0.2f)
                 ),
-                color = Color(0xFF60A5FA)
-            )
+                border = ClickableSurfaceDefaults.border(
+                    border = Border(
+                        androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            Color.White.copy(alpha = 0.1f)
+                        )
+                    ),
+                    focusedBorder = Border(
+                        androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            Color(0xFF60A5FA)
+                        )
+                    )
+                ),
+                shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(50.dp))
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "VER TODO",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 1.sp
+                        ),
+                        color = if (isSeeMoreFocused) Color(0xFF60A5FA) else Color.White.copy(alpha = 0.6f)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight,
+                        contentDescription = null,
+                        tint = if (isSeeMoreFocused) Color(0xFF60A5FA) else Color.White.copy(alpha = 0.3f),
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
         }
-        
+
         LazyRow(
             state = rowState,
             contentPadding = PaddingValues(start = 48.dp, end = 48.dp, top = 4.dp, bottom = 12.dp),
@@ -654,9 +840,10 @@ fun HistoryRow(
             modifier = Modifier
                 .onFocusChanged {
                     isRowFocused = it.hasFocus
-                    if (it.hasFocus) {
+                    if (it.hasFocus && !isDetailsActive && !isCategoryActive && !isPlayerActive) {
                         isFirstEntry = false
                         DataCache.globalLastFocusedKey = rowKey
+                        DataCache.lastHomeFocusedKey = rowKey
                     }
                 }
         ) {
@@ -664,7 +851,8 @@ fun HistoryRow(
                 items = movies,
                 key = { _, movie -> "history_${movie.id}" }
             ) { index, movie ->
-                val progressSec = DataCache.currentUser?.watchProgress?.get(movie.id.toString())?.time ?: 0.0
+                val progressSec =
+                    DataCache.currentUser?.watchProgress?.get(movie.id.toString())?.time ?: 0.0
                 val fr = itemRequesters.getOrNull(index) ?: remember { FocusRequester() }
                 HistoryMovieCard(
                     movie = movie,
@@ -672,9 +860,59 @@ fun HistoryRow(
                     onClick = { onMovieClick(movie.id) },
                     isFirstInRow = index == 0,
                     screenKey = "home_history",
-                    focusRequester = fr
+                    focusRequester = fr,
+                    upFocus = seeMoreRequester,
+                    leftFocus = if (index == 0) leftFocus else null
                 )
             }
         }
     }
+}
+
+private fun computeDeduplicatedCarousels(
+    categories: List<HomeCategory>,
+    categoryMoviesMap: Map<String, List<Movie>>
+): Map<String, List<Movie>> {
+    val result = mutableMapOf<String, List<Movie>>()
+    val shownMovieIds = mutableSetOf<Int>()
+
+    for (category in categories) {
+        val rawMovies = categoryMoviesMap[category.id] ?: emptyList()
+        if (rawMovies.isEmpty()) {
+            result[category.id] = emptyList()
+            continue
+        }
+
+        val unrepeated = mutableListOf<Movie>()
+        val repeated = mutableListOf<Movie>()
+        val seenInRaw = mutableSetOf<Int>()
+
+        for (movie in rawMovies) {
+            if (!seenInRaw.add(movie.id)) continue
+
+            if (movie.id !in shownMovieIds) {
+                unrepeated.add(movie)
+            } else {
+                repeated.add(movie)
+            }
+        }
+
+        val displayList = mutableListOf<Movie>()
+
+        if (unrepeated.size >= 15) {
+            displayList.addAll(unrepeated.take(15))
+        } else {
+            displayList.addAll(unrepeated)
+            val needed = 15 - displayList.size
+            displayList.addAll(repeated.take(needed))
+        }
+
+        for (movie in displayList) {
+            shownMovieIds.add(movie.id)
+        }
+
+        result[category.id] = displayList
+    }
+
+    return result
 }

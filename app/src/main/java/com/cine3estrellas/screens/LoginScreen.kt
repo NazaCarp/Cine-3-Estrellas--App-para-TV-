@@ -174,7 +174,7 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
                 ) {
                     InstructionStepModern(1, "Escanea el código QR o busca @Cine_3Estrellas_bot en Telegram.", isLast = false)
                     InstructionStepModern(2, "Inicia el bot y únete a nuestro grupo oficial.", isLast = false)
-                    InstructionStepModern(3, "El bot te dará tu Código de Acceso. Ingrésalo a la derecha.", isLast = true)
+                    InstructionStepModern(3, "Escanea el QR nuevamente y el bot te dará tu Código de Acceso GRATIS", isLast = true)
                 }
             }
 

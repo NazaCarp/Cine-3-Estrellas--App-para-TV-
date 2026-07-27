@@ -12,12 +12,21 @@ import io.ktor.client.request.parameter
 import io.ktor.client.request.headers
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 import android.content.Context
 import kotlinx.serialization.Serializable
 import io.github.jan.supabase.postgrest.from
+import io.github.jan.supabase.postgrest.query.Columns
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import android.util.Log
 
 @Serializable
 data class GeoIpResponse(
@@ -25,6 +34,14 @@ data class GeoIpResponse(
     val countryName: String? = null,
     val regionName: String? = null,
     val cityName: String? = null
+)
+
+@Serializable
+data class AppVersionResponse(
+    val version: String,
+    val versionCode: Int,
+    val apkUrl: String,
+    val changelog: String? = null
 )
 
 object SupabaseManager {
@@ -50,6 +67,45 @@ object SupabaseManager {
         } catch (e: Exception) {
             e.printStackTrace()
             null
+        }
+    }
+
+    suspend fun checkForUpdate(): AppVersionResponse? {
+        return try {
+            httpClient.get("${WebConfig.BASE_URL}/api/app-version?t=${System.currentTimeMillis()}").body<AppVersionResponse>()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    /**
+     * Dado un listado de películas de TMDB, devuelve solo las que existen en la base de datos.
+     * Hace una sola query con filtro `in` sobre los IDs para ser eficiente.
+     */
+    suspend fun filterMoviesInDatabase(candidates: List<Movie>): List<Movie> {
+        if (candidates.isEmpty()) return emptyList()
+        return try {
+            val ids = candidates.map { it.id }
+            // Usamos MovieIdResult (no Movie) porque Supabase solo devuelve id+poster_path,
+            // y Movie.title es non-nullable sin default — causaría fallo de deserialización.
+            val inDb = client.from("movies")
+                .select(columns = Columns.list("id", "poster_path")) { filter { isIn("id", ids) } }
+                .decodeList<MovieIdResult>()
+            val inDbIds = inDb.map { it.id }.toSet()
+            // Preservamos el orden original de TMDB y enriquecemos con datos de Supabase
+            candidates
+                .filter { it.id in inDbIds }
+                .map { tmdbMovie ->
+                    val dbMovie = inDb.find { it.id == tmdbMovie.id }
+                    // Preferimos poster de Supabase si está disponible
+                    tmdbMovie.copy(
+                        poster_path = dbMovie?.poster_path ?: tmdbMovie.poster_path
+                    )
+                }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            emptyList()
         }
     }
 
@@ -158,6 +214,71 @@ object SupabaseManager {
         }
     }
 
+    suspend fun updateMovieVersionCleanUrl(movieId: Int, versionKey: String, cleanUrl: String, expiresAt: Long) {
+        try {
+            val movie = client.from("movies")
+                .select(columns = Columns.list("id", "versions")) { filter { eq("id", movieId) } }
+                .decodeSingleOrNull<Movie>() ?: return
+
+            val currentVersions = movie.versions ?: emptyMap()
+            val targetVersion = currentVersions[versionKey] ?: return
+
+            val updatedVersion = targetVersion.copy(
+                cleanUrl = cleanUrl,
+                cleanUrlExpiresAt = expiresAt
+            )
+
+            val updatedVersionsMap = currentVersions.toMutableMap().apply {
+                put(versionKey, updatedVersion)
+            }
+
+            client.from("movies").update(mapOf("versions" to updatedVersionsMap)) {
+                filter { eq("id", movieId) }
+            }
+
+            val cachedMovie = DataCache.movieDetailsMap[movieId]
+            if (cachedMovie != null) {
+                DataCache.movieDetailsMap[movieId] = cachedMovie.copy(versions = updatedVersionsMap)
+            }
+
+            Log.d("SupabaseManager", "Successfully updated cleanUrl in database for movie $movieId, version $versionKey")
+        } catch (e: Exception) {
+            Log.e("SupabaseManager", "Failed to update movie version cleanUrl in database", e)
+        }
+    }
+
+    suspend fun clearMovieVersionCleanUrl(movieId: Int, versionKey: String) {
+        try {
+            val movie = client.from("movies")
+                .select(columns = Columns.list("id", "versions")) { filter { eq("id", movieId) } }
+                .decodeSingleOrNull<Movie>() ?: return
+
+            val currentVersions = movie.versions ?: emptyMap()
+            val targetVersion = currentVersions[versionKey] ?: return
+
+            val updatedVersion = targetVersion.copy(
+                cleanUrl = null,
+                cleanUrlExpiresAt = null
+            )
+
+            val updatedVersionsMap = currentVersions.toMutableMap().apply {
+                put(versionKey, updatedVersion)
+            }
+
+            client.from("movies").update(mapOf("versions" to updatedVersionsMap)) {
+                filter { eq("id", movieId) }
+            }
+
+            val cachedMovie = DataCache.movieDetailsMap[movieId]
+            if (cachedMovie != null) {
+                DataCache.movieDetailsMap[movieId] = cachedMovie.copy(versions = updatedVersionsMap)
+            }
+            Log.d("SupabaseManager", "Successfully cleared invalid cleanUrl in database for movie $movieId, version $versionKey")
+        } catch (e: Exception) {
+            Log.e("SupabaseManager", "Failed to clear movie version cleanUrl in database", e)
+        }
+    }
+
     suspend fun syncUser(context: Context, telegramUser: User): User? {
         val geoData = try {
             httpClient.get("https://freeipapi.com/api/json").body<GeoIpResponse>()
@@ -185,14 +306,12 @@ object SupabaseManager {
             languageCode = telegramUser.languageCode ?: dbUser?.languageCode,
             isPremium = telegramUser.isPremium || (dbUser?.isPremium ?: false),
             allowsWriteToPm = telegramUser.allowsWriteToPm || (dbUser?.allowsWriteToPm ?: false),
-            platform = "android",
-            version = "v1.0.4",
+            platform = "Android TV (v${BuildConfig.VERSION_NAME})",
             ip = geoData?.ipAddress ?: dbUser?.ip ?: "unknown",
             country = geoData?.countryName ?: dbUser?.country,
             province = geoData?.regionName ?: dbUser?.province,
             city = geoData?.cityName ?: dbUser?.city,
             timezone = timezone,
-            browser = "Android TV App",
             screenSize = screenSize,
             lastSeen = nowIso,
             totalVisits = dbUser?.totalVisits ?: 0,
@@ -200,7 +319,9 @@ object SupabaseManager {
             watchHistory = dbUser?.watchHistory ?: emptyList(),
             hiddenHistory = dbUser?.hiddenHistory ?: emptyList(),
             welcomeSent = dbUser?.welcomeSent ?: false,
-            watchProgress = dbUser?.watchProgress ?: emptyMap()
+            watchProgress = dbUser?.watchProgress ?: emptyMap(),
+            miniApp = if (dbUser?.miniApp == "✅") "✅" else "❌",
+            aplicacion = "✅"
         )
 
         val savedUser = upsertUser(updatedUser) ?: updatedUser
@@ -266,6 +387,23 @@ object TmdbManager {
         }
     }
 
+    suspend fun getMovieCollectionId(movieId: Int): Int? {
+        return try {
+            val jsonElement: kotlinx.serialization.json.JsonElement =
+                httpClient.get("$BASE_URL/movie/$movieId") {
+                    parameter("api_key", API_KEY)
+                    parameter("language", "es-MX")
+                }.body()
+            val obj = jsonElement.jsonObject
+            val collection = obj["belongs_to_collection"]
+            if (collection is JsonObject) {
+                (collection["id"] as? JsonPrimitive)?.intOrNull
+            } else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     suspend fun getSimilarMovies(movieId: Int): List<Movie> {
         return try {
             // Primero intentamos con similar
@@ -283,6 +421,29 @@ object TmdbManager {
             }
 
             response.results
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun getCollectionMovies(collectionId: Int): List<Movie> {
+        return try {
+            val response: TmdbCollectionResponse = httpClient.get("$BASE_URL/collection/$collectionId") {
+                parameter("api_key", API_KEY)
+                parameter("language", "es-MX")
+            }.body()
+            response.parts
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun getMovieImages(movieId: Int): List<String> {
+        return try {
+            val response: TmdbImagesResponse = httpClient.get("$BASE_URL/movie/$movieId/images") {
+                parameter("api_key", API_KEY)
+            }.body()
+            response.backdrops?.mapNotNull { it.filePath } ?: emptyList()
         } catch (e: Exception) {
             emptyList()
         }
@@ -357,37 +518,89 @@ object VideoExtractor {
         }
     }
 
-    suspend fun extractCleanUrl(embedUrl: String): String? {
-        // 1. Extractor estático local (Dean Edwards packer) — funciona con minochinos.com y callistanise.com
-        if (embedUrl.contains("minochinos.com") || embedUrl.contains("callistanise.com")) {
-            val resolvedUrl = StreamExtractor.extractWithStaticParser(embedUrl)
-            if (resolvedUrl != null) {
-                return resolvedUrl
-            }
+    suspend fun extractCleanUrl(embedUrl: String, movieId: Int? = null, version: String? = null): String? {
+        val cached = DataCache.extractedUrlsMap[embedUrl]
+        if (cached != null) {
+            Log.d("VideoExtractor", "Cache hit for embedUrl: $embedUrl")
+            return cached
+        }
+
+        var resolvedUrl: String? = null
+
+        // 1. Extractor estático local (Dean Edwards packer) — funciona con minochinos.com, callistanise.com, morencius.com y tiktokshopping.xyz
+        if (embedUrl.contains("minochinos.com") || embedUrl.contains("callistanise.com") || embedUrl.contains("morencius.com") || embedUrl.contains("tiktokshopping.xyz")) {
+            resolvedUrl = StreamExtractor.extractWithStaticParser(embedUrl)
         }
 
         // 2. Si es un enlace de OK.ru, realizamos extracción local directa de HLS/MP4 de alta calidad
-        if (embedUrl.contains("ok.ru") || embedUrl.contains("odnoklassniki")) {
+        if (resolvedUrl == null && (embedUrl.contains("ok.ru") || embedUrl.contains("odnoklassniki"))) {
             val result = OkExtractor.extractVideo(embedUrl)
             if (result.isSuccess) {
                 val video = result.getOrNull()
                 val bestStream = video?.streams?.firstOrNull()
                 if (bestStream != null) {
-                    return bestStream.url
+                    resolvedUrl = bestStream.url
                 }
             }
         }
 
-        // 2. Fallback: Consumir la API de Vercel
+        // 3. Fallback: Consumir la API de Vercel
+        if (resolvedUrl == null) {
+            resolvedUrl = try {
+                val response: ExtractionResponse = client.get("${WebConfig.BASE_URL}/api/extract") {
+                    parameter("url", embedUrl)
+                }.body()
+                response.qualities.firstOrNull()?.url
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
+            }
+        }
+
+        if (resolvedUrl != null) {
+            DataCache.extractedUrlsMap[embedUrl] = resolvedUrl
+            
+            // Asynchronously save to central database if movie context is provided
+            if (movieId != null && version != null) {
+                val expiresAt = getExpirationTimestamp(resolvedUrl)
+                CoroutineScope(Dispatchers.IO).launch {
+                    SupabaseManager.updateMovieVersionCleanUrl(movieId, version, resolvedUrl, expiresAt)
+                }
+            }
+        }
+        return resolvedUrl
+    }
+
+    fun getExpirationTimestamp(url: String): Long {
         return try {
-            val response: ExtractionResponse = client.get("${WebConfig.BASE_URL}/api/extract") {
-                parameter("url", embedUrl)
-            }.body()
-            response.qualities.firstOrNull()?.url
+            val uri = java.net.URI(url)
+            val query = uri.query
+            if (query != null) {
+                val params = query.split("&")
+                for (param in params) {
+                    val pair = param.split("=")
+                    if (pair.size == 2 && pair[0] == "expires") {
+                        val expVal = pair[1].toLongOrNull()
+                        if (expVal != null) {
+                            return if (expVal < 99999999999L) expVal * 1000 else expVal
+                        }
+                    }
+                }
+            }
+            System.currentTimeMillis() + 2 * 60 * 60 * 1000 // default 2 hours
         } catch (e: Exception) {
-            e.printStackTrace()
-            null
+            System.currentTimeMillis() + 2 * 60 * 60 * 1000
         }
     }
 }
+
+@kotlinx.serialization.Serializable
+data class TmdbImagesResponse(
+    val backdrops: List<TmdbImage>? = null
+)
+
+@kotlinx.serialization.Serializable
+data class TmdbImage(
+    @kotlinx.serialization.SerialName("file_path") val filePath: String? = null
+)
 

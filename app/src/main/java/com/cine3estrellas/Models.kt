@@ -63,13 +63,11 @@ data class User(
     @SerialName("is_premium") val isPremium: Boolean = false,
     @SerialName("allows_write_to_pm") val allowsWriteToPm: Boolean = false,
     @SerialName("platform") val platform: String? = null,
-    @SerialName("version") val version: String? = null,
     @SerialName("ip") val ip: String? = null,
     @SerialName("country") val country: String? = null,
     @SerialName("province") val province: String? = null,
     @SerialName("city") val city: String? = null,
     @SerialName("timezone") val timezone: String? = null,
-    @SerialName("browser") val browser: String? = null,
     @SerialName("screen_size") val screenSize: String? = null,
     @SerialName("last_seen") val lastSeen: String? = null,
     @SerialName("total_visits") val totalVisits: Int = 0,
@@ -80,6 +78,8 @@ data class User(
     @SerialName("watch_progress") val watchProgress: Map<String, WatchProgressVal> = emptyMap(),
     @SerialName("auth_code") val authCode: String? = null,
     @SerialName("auth_code_expires_at") val authCodeExpiresAt: String? = null,
+    @SerialName("Mini App") val miniApp: String? = null,
+    @SerialName("Aplicación") val aplicacion: String? = null,
     @Transient val photoUrl: String? = null
 )
 
@@ -106,6 +106,20 @@ data class IncrementDailyStatsParams(
 )
 
 @Serializable
+data class TmdbCollectionResponse(
+    val id: Int,
+    val name: String? = null,
+    val parts: List<Movie> = emptyList()
+)
+
+/** Usado solo para consultas parciales de Supabase que devuelven id + poster_path */
+@Serializable
+data class MovieIdResult(
+    val id: Int,
+    val poster_path: String? = null
+)
+
+@Serializable
 data class Movie(
     val id: Int,
     val title: String,
@@ -129,7 +143,9 @@ data class Movie(
 data class MovieVersion(
     val url: String,
     val quality: String,
-    val downloadUrl: String? = null
+    val downloadUrl: String? = null,
+    val cleanUrl: String? = null,
+    val cleanUrlExpiresAt: Long? = null
 )
 
 @Serializable
@@ -176,3 +192,48 @@ data class TvHomeCategory(
     val total_count: Long? = null,  // Real total from Supabase, used for VER MÁS counter
     val movies: List<Movie>
 )
+
+private fun getQualityPriority(quality: String): Int {
+    val q = quality.lowercase().trim()
+    return when {
+        q.contains("4k") || q.contains("2160p") || q == "ultra" || q == "uhd" -> 80
+        q.contains("2k") || q.contains("1440p") || q == "quad" -> 70
+        q.contains("1080p") || q.contains("1080") || q.contains("full") || q.contains("fhd") -> 60
+        q.contains("720p") || q.contains("720") || q == "hd" -> 50
+        q.contains("480p") || q == "sd" -> 40
+        q.contains("360p") || q == "low" -> 30
+        q.contains("240p") || q == "lowest" -> 20
+        q.contains("144p") || q == "mobile" -> 10
+        q.contains("hdcam") -> 5
+        q.contains("cam") || q.contains("ts") || q.contains("tc") || q.contains("scr") -> 2
+        else -> 0
+    }
+}
+
+private fun getFormattedQuality(quality: String): String {
+    val q = quality.lowercase().trim()
+    return when {
+        q.contains("4k") || q.contains("2160p") || q == "ultra" || q == "uhd" -> "4K"
+        q.contains("2k") || q.contains("1440p") || q == "quad" -> "2K"
+        q.contains("1080p") || q.contains("1080") || q.contains("full") || q.contains("fhd") -> "Full HD"
+        q.contains("720p") || q.contains("720") || q == "hd" -> "HD"
+        q.contains("480p") || q == "sd" -> "SD"
+        q.contains("360p") || q == "low" -> "360p"
+        q.contains("240p") || q == "lowest" -> "240p"
+        q.contains("144p") || q == "mobile" -> "144p"
+        q.contains("cam") || q.contains("ts") || q.contains("tc") || q.contains("scr") -> "CAM"
+        else -> quality.uppercase()
+    }
+}
+
+val Movie.maxQuality: String
+    get() {
+        val versionQualities = versions?.values?.map { it.quality } ?: emptyList()
+        if (versionQualities.isEmpty()) return "HD"
+        val maxQual = versionQualities.maxByOrNull { getQualityPriority(it) } ?: "HD"
+        return getFormattedQuality(maxQual)
+    }
+
+val MovieVersion.formattedQuality: String
+    get() = getFormattedQuality(quality)
+

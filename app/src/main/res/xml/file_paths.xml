@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Directorio donde DownloadManager guarda el APK descargado -->
+    <external-files-path
+        name="downloads"
+        path="Downloads/" />
+    <cache-path
+        name="cache"
+        path="." />
+</paths>

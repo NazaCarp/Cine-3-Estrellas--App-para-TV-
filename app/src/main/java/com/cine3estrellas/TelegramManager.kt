@@ -9,10 +9,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 object TelegramManager {
-    // TODO: Provide the actual bot token here
-    private const val BOT_TOKEN = "7393250047:AAEW7hLKi3cuaBvBn4Y8V8cubti_cympo7Q"
-    private const val BASE_URL = "https://api.telegram.org/bot$BOT_TOKEN"
-    private const val GROUP_ID = "@Cine_3Estrellas"
+    private const val PROXY_BASE_URL = "${WebConfig.BASE_URL}/api/telegram"
 
     private val httpClient = HttpClient {
         install(ContentNegotiation) {
@@ -25,8 +22,7 @@ object TelegramManager {
 
     suspend fun checkGroupMembership(telegramId: String): Boolean {
         return try {
-            val response: TelegramResponse<ChatMember> = httpClient.get("$BASE_URL/getChatMember") {
-                parameter("chat_id", GROUP_ID)
+            val response: TelegramResponse<ChatMember> = httpClient.get("$PROXY_BASE_URL/membership") {
                 parameter("user_id", telegramId)
             }.body()
 
@@ -44,8 +40,8 @@ object TelegramManager {
 
     suspend fun getUserInfo(telegramId: String): User? {
         return try {
-            val response: TelegramResponse<TelegramUser> = httpClient.get("$BASE_URL/getChat") {
-                parameter("chat_id", telegramId)
+            val response: TelegramResponse<TelegramUser> = httpClient.get("$PROXY_BASE_URL/user-info") {
+                parameter("telegram_id", telegramId)
             }.body()
 
             if (response.ok && response.result != null) {
@@ -55,7 +51,7 @@ object TelegramManager {
                     firstName = tUser.first_name,
                     lastName = tUser.last_name,
                     username = tUser.username,
-                    photoUrl = null // Simplified for now
+                    photoUrl = null
                 )
             } else {
                 null

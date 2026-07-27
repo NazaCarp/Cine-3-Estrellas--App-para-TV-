@@ -59,19 +59,16 @@ fun MovieCardPlaceholder() {
         ),
         label = "shimmer"
     )
-
     val shimmerColors = listOf(
         Color.DarkGray.copy(alpha = 0.6f),
         Color.Gray.copy(alpha = 0.2f),
         Color.DarkGray.copy(alpha = 0.6f),
     )
-
     val brush = Brush.linearGradient(
         colors = shimmerColors,
         start = Offset.Zero,
         end = Offset(x = translateAnim, y = translateAnim)
     )
-
     Box(
         modifier = Modifier
             .width(110.dp)
@@ -89,13 +86,12 @@ fun String.cleanTitle(): String {
  */
 fun formatCertification(cert: String?): String {
     if (cert.isNullOrBlank()) return ""
-    
+
     // Normalize string
     val c = cert.uppercase().trim()
-    
+
     // Check if the certification is just a number
     if (c.all { it.isDigit() }) return "+$c"
-
     return when {
         // Spain / Generic numeric
         c.contains("18") -> "+18"
@@ -104,19 +100,19 @@ fun formatCertification(cert: String?): String {
         c.contains("13") -> "+13"
         c.contains("12") -> "+12"
         c.contains("7") -> "+7"
-        
+
         // US Ratings (Common in TMDB)
         c == "R" || c == "NC-17" || c == "TV-MA" -> "+18"
         c == "PG-13" || c == "TV-14" -> "+13"
         c == "PG" || c == "TV-PG" -> "+7"
         c == "G" || c == "TV-G" || c == "TV-Y" || c == "TV-Y7" -> "TP" // Todo Público
-        
+
         // Latin America
         c == "C" -> "+18"
         c == "B15" -> "+15"
         c == "B" -> "+12"
         c == "A" -> "TP"
-        
+
         else -> cert // Fallback
     }
 }
@@ -134,15 +130,17 @@ fun MovieCard(
     nextFocusRequester: FocusRequester? = null,
     leftFocus: FocusRequester? = null,
     upFocus: FocusRequester? = null,
-    downFocus: FocusRequester? = null
+    downFocus: FocusRequester? = null,
+    rightFocus: FocusRequester? = null
 ) {
     val sidebarRequesters = LocalTabFocusRequesters.current
     val selectedTab = LocalSelectedTab.current
     val isDetailsActive = LocalDetailsActive.current
+    val isCategoryActive = LocalCategoryActive.current
+    val isPlayerActive = LocalPlayerOverlayActive.current
     var isFocused by remember { mutableStateOf(false) }
-
     // Focus restoration logic
-    LaunchedEffect(isDetailsActive, focusRequester) {
+    LaunchedEffect(isDetailsActive, focusRequester, DataCache.focusRestorationTrigger) {
         if (!isDetailsActive && screenKey != null) {
             val restoreId = DataCache.movieIdToRestore
             val restoreKey = DataCache.keyToRestore
@@ -151,7 +149,6 @@ fun MovieCard(
             } else {
                 DataCache.lastFocusedMovieId[screenKey] == movie.id && DataCache.globalLastFocusedKey == screenKey
             }
-
             if (shouldRestore) {
                 delay(50) // Tiny delay for UI settling
                 try {
@@ -166,108 +163,118 @@ fun MovieCard(
             }
         }
     }
-
     val cardScale by animateFloatAsState(
         targetValue = if (isFocused) 1.1f else 1.0f,
         animationSpec = tween(200, easing = FastOutSlowInEasing),
         label = "movieCardScale"
     )
-
     Box(modifier = Modifier.graphicsLayer { clip = false }) {
-    Column(
-        modifier = modifier
-            .width(cardWidth)
-            .graphicsLayer {
-                scaleX = cardScale
-                scaleY = cardScale
-                clip = false
-                transformOrigin = TransformOrigin(0.5f, 0f)
-            }
-            .onFocusChanged { 
-                isFocused = it.hasFocus
-                if (it.hasFocus && screenKey != null) {
-                    DataCache.lastFocusedMovieId[screenKey] = movie.id
-                    DataCache.globalLastFocusedKey = screenKey
+        Column(
+            modifier = modifier
+                .width(cardWidth)
+                .graphicsLayer {
+                    scaleX = cardScale
+                    scaleY = cardScale
+                    clip = false
+                    transformOrigin = TransformOrigin(0.5f, 0f)
                 }
-            }
-            .padding(bottom = 8.dp)
-    ) {
-        Surface(
-            onClick = onClick,
-            scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
-            border = ClickableSurfaceDefaults.border(
-                border = Border(androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.1f))),
-                focusedBorder = Border(androidx.compose.foundation.BorderStroke(2.dp, Color(0xFFFFE000)))
-            ),
-            glow = ClickableSurfaceDefaults.glow(
-                focusedGlow = Glow(Color(0xFFFFE000).copy(alpha = 0.5f), 10.dp)
-            ),
-            shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(2f / 3f)
-                .focusRequester(focusRequester)
-                .focusProperties {
-                    left = leftFocus ?: if (isFirstInRow && sidebarRequesters.isNotEmpty()) {
-                        sidebarRequesters[selectedTab]
-                    } else FocusRequester.Default
-                    
-                    if (nextFocusRequester != null) {
-                        right = nextFocusRequester
+                .onFocusChanged {
+                    isFocused = it.hasFocus
+                    if (it.hasFocus && screenKey != null && !isDetailsActive && !isCategoryActive && !isPlayerActive) {
+                        DataCache.lastFocusedMovieId[screenKey] = movie.id
+                        DataCache.globalLastFocusedKey = screenKey
                     }
-                    
-                    if (upFocus != null) up = upFocus
-                    if (downFocus != null) down = downFocus
                 }
+                .padding(bottom = 8.dp)
         ) {
-            AsyncImage(
-                model = "https://image.tmdb.org/t/p/w500${movie.poster_path}",
-                contentDescription = movie.title,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-        }
-        
-        Spacer(modifier = Modifier.height(8.dp))
-        
-        // Info below
-        Text(
-            text = movie.title.cleanTitle(),
-            style = MaterialTheme.typography.labelMedium,
-            maxLines = 1,
-            overflow = if (isFocused) TextOverflow.Visible else TextOverflow.Ellipsis,
-            color = if (isFocused) Color.White else Color.White.copy(alpha = 0.7f),
-            fontWeight = if (isFocused) FontWeight.Bold else FontWeight.Normal,
-            modifier = Modifier
-                .padding(horizontal = 4.dp)
-                .then(
-                    if (isFocused) {
-                        Modifier.basicMarquee(
-                            iterations = Int.MAX_VALUE,
-                            velocity = 50.dp,
-                            initialDelayMillis = 1000
+            Surface(
+                onClick = onClick,
+                scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
+                border = ClickableSurfaceDefaults.border(
+                    border = Border(
+                        androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            Color.White.copy(alpha = 0.1f)
                         )
-                    } else Modifier
+                    ),
+                    focusedBorder = Border(
+                        androidx.compose.foundation.BorderStroke(
+                            2.dp,
+                            Color(0xFFFFE000)
+                        )
+                    )
+                ),
+                glow = ClickableSurfaceDefaults.glow(
+                    focusedGlow = Glow(Color(0xFFFFE000).copy(alpha = 0.5f), 10.dp)
+                ),
+                shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(2f / 3f)
+                    .focusRequester(focusRequester)
+                    .focusProperties {
+                        left = leftFocus ?: if (isFirstInRow && sidebarRequesters.isNotEmpty()) {
+                            sidebarRequesters[selectedTab]
+                        } else FocusRequester.Default
+
+                        if (rightFocus != null) {
+                            right = rightFocus
+                        } else if (nextFocusRequester != null) {
+                            right = nextFocusRequester
+                        }
+
+                        if (upFocus != null) up = upFocus
+                        if (downFocus != null) down = downFocus
+                    }
+            ) {
+                AsyncImage(
+                    model = "https://image.tmdb.org/t/p/w500${movie.poster_path}",
+                    contentDescription = movie.title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
                 )
-        )
-        
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(start = 4.dp, end = 4.dp, top = 2.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Default.Star,
-                contentDescription = null,
-                tint = Gold,
-                modifier = Modifier.size(12.dp)
-            )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Info below
             Text(
-                text = " ${movie.vote_average ?: 0.0} • ${movie.release_date?.take(4) ?: ""}",
-                style = MaterialTheme.typography.labelSmall,
-                color = if (isFocused) Gold else Color.White.copy(alpha = 0.5f)
+                text = movie.title.cleanTitle(),
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+                overflow = if (isFocused) TextOverflow.Visible else TextOverflow.Ellipsis,
+                color = if (isFocused) Color.White else Color.White.copy(alpha = 0.7f),
+                fontWeight = if (isFocused) FontWeight.Bold else FontWeight.Normal,
+                modifier = Modifier
+                    .padding(horizontal = 4.dp)
+                    .then(
+                        if (isFocused) {
+                            Modifier.basicMarquee(
+                                iterations = Int.MAX_VALUE,
+                                velocity = 50.dp,
+                                initialDelayMillis = 1000
+                            )
+                        } else Modifier
+                    )
             )
-        }
-    } // end Column
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(start = 4.dp, end = 4.dp, top = 2.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Star,
+                    contentDescription = null,
+                    tint = Gold,
+                    modifier = Modifier.size(12.dp)
+                )
+                Text(
+                    text = " ${movie.vote_average ?: 0.0} • ${movie.release_date?.take(4) ?: ""}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (isFocused) Gold else Color.White.copy(alpha = 0.5f)
+                )
+            }
+        } // end Column
     } // end Box
 }
 
@@ -280,15 +287,20 @@ fun HistoryMovieCard(
     modifier: Modifier = Modifier,
     isFirstInRow: Boolean = false,
     screenKey: String? = null,
-    focusRequester: FocusRequester = remember { FocusRequester() }
+    focusRequester: FocusRequester = remember { FocusRequester() },
+    upFocus: FocusRequester? = null,
+    downFocus: FocusRequester? = null,
+    leftFocus: FocusRequester? = null,
+    nextFocusRequester: FocusRequester? = null
 ) {
     val sidebarRequesters = LocalTabFocusRequesters.current
     val selectedTab = LocalSelectedTab.current
     val isDetailsActive = LocalDetailsActive.current
+    val isCategoryActive = LocalCategoryActive.current
+    val isPlayerActive = LocalPlayerOverlayActive.current
     var isFocused by remember { mutableStateOf(false) }
-
     // Focus restoration logic
-    LaunchedEffect(isDetailsActive, movie.id, screenKey, focusRequester) {
+    LaunchedEffect(isDetailsActive, movie.id, screenKey, focusRequester, DataCache.focusRestorationTrigger) {
         if (!isDetailsActive && screenKey != null) {
             val restoreId = DataCache.movieIdToRestore
             val restoreKey = DataCache.keyToRestore
@@ -297,12 +309,12 @@ fun HistoryMovieCard(
             } else {
                 DataCache.lastFocusedMovieId[screenKey] == movie.id && DataCache.globalLastFocusedKey == screenKey
             }
-
             if (shouldRestore) {
                 delay(50) // Tiny delay for UI settling
                 try {
                     focusRequester.requestFocus()
-                } catch (e: Exception) {}
+                } catch (e: Exception) {
+                }
                 if (restoreId != null) {
                     DataCache.movieIdToRestore = null
                     DataCache.keyToRestore = null
@@ -310,138 +322,161 @@ fun HistoryMovieCard(
             }
         }
     }
-
     val histCardScale by animateFloatAsState(
         targetValue = if (isFocused) 1.1f else 1.0f,
         animationSpec = tween(200, easing = FastOutSlowInEasing),
         label = "histCardScale"
     )
-
     Box(modifier = Modifier.graphicsLayer { clip = false }) {
-    Column(
-        modifier = modifier
-            .width(96.dp)
-            .graphicsLayer {
-                scaleX = histCardScale
-                scaleY = histCardScale
-                clip = false
-                transformOrigin = TransformOrigin(0.5f, 0f)
-            }
-            .onFocusChanged {
-                isFocused = it.hasFocus
-                if (it.hasFocus && screenKey != null) {
-                    DataCache.lastFocusedMovieId[screenKey] = movie.id
-                    DataCache.globalLastFocusedKey = screenKey
+        Column(
+            modifier = modifier
+                .width(96.dp)
+                .graphicsLayer {
+                    scaleX = histCardScale
+                    scaleY = histCardScale
+                    clip = false
+                    transformOrigin = TransformOrigin(0.5f, 0f)
                 }
-            }
-            .padding(bottom = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Surface(
-            onClick = onClick,
-            scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
-            border = ClickableSurfaceDefaults.border(
-                border = Border(androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.1f))),
-                focusedBorder = Border(androidx.compose.foundation.BorderStroke(2.dp, Color(0xFF3B82F6)))
-            ),
-            glow = ClickableSurfaceDefaults.glow(
-                focusedGlow = Glow(Color(0xFF3B82F6).copy(alpha = 0.5f), 10.dp)
-            ),
-            shape = ClickableSurfaceDefaults.shape(CircleShape),
-            modifier = Modifier
-                .size(80.dp)
-                .focusRequester(focusRequester)
-                .focusProperties {
-                    if (isFirstInRow && sidebarRequesters.isNotEmpty()) {
-                        left = sidebarRequesters[selectedTab]
+                .onFocusChanged {
+                    isFocused = it.hasFocus
+                    if (it.hasFocus && screenKey != null && !isDetailsActive && !isCategoryActive && !isPlayerActive) {
+                        DataCache.lastFocusedMovieId[screenKey] = movie.id
+                        DataCache.globalLastFocusedKey = screenKey
                     }
                 }
+                .padding(bottom = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Box(modifier = Modifier.fillMaxSize()) {
-                AsyncImage(
-                    model = "https://image.tmdb.org/t/p/w500${movie.poster_path}",
-                    contentDescription = movie.title,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-                
-                val runtimeMin = movie.runtime ?: 120
-                val totalDurationSec = runtimeMin * 60.0
-                val progressFraction = (progressSec / totalDurationSec).coerceIn(0.0, 1.0).toFloat()
-                
-                androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-                    val strokeWidth = 4.dp.toPx()
-                    val diameter = size.minDimension - strokeWidth
-                    val radius = diameter / 2
-                    val arcSize = androidx.compose.ui.geometry.Size(diameter, diameter)
-                    val arcOffset = Offset(
-                        (size.width - diameter) / 2,
-                        (size.height - diameter) / 2
+            Surface(
+                onClick = onClick,
+                scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
+                border = ClickableSurfaceDefaults.border(
+                    border = Border(
+                        androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            Color.White.copy(alpha = 0.1f)
+                        )
+                    ),
+                    focusedBorder = Border(
+                        androidx.compose.foundation.BorderStroke(
+                            2.dp,
+                            Color(0xFF3B82F6)
+                        )
                     )
-                    
-                    // Background grey ring
-                    drawCircle(
-                        color = Color.White.copy(alpha = 0.15f),
-                        radius = radius,
-                        style = Stroke(width = strokeWidth)
+                ),
+                glow = ClickableSurfaceDefaults.glow(
+                    focusedGlow = Glow(Color(0xFF3B82F6).copy(alpha = 0.5f), 10.dp)
+                ),
+                shape = ClickableSurfaceDefaults.shape(CircleShape),
+                modifier = Modifier
+                    .size(80.dp)
+                    .focusRequester(focusRequester)
+                    .focusProperties {
+                        left = leftFocus ?: if (isFirstInRow && sidebarRequesters.isNotEmpty()) {
+                            sidebarRequesters[selectedTab]
+                        } else FocusRequester.Default
+
+                        if (nextFocusRequester != null) right = nextFocusRequester
+                        if (upFocus != null) up = upFocus
+                        if (downFocus != null) down = downFocus
+                    }
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    AsyncImage(
+                        model = "https://image.tmdb.org/t/p/w500${movie.poster_path}",
+                        contentDescription = movie.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
                     )
-                    
-                    // Foreground blue progress arc
-                    drawArc(
-                        color = Color(0xFF3B82F6),
-                        startAngle = -90f,
-                        sweepAngle = progressFraction * 360f,
-                        useCenter = false,
-                        style = Stroke(width = strokeWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round),
-                        size = arcSize,
-                        topLeft = arcOffset
-                    )
-                }
-                
-                if (isFocused) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color(0x33000000)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(24.dp)
+
+                    val runtimeMin = movie.runtime ?: 120
+                    val totalDurationSec = runtimeMin * 60.0
+                    val progressFraction =
+                        (progressSec / totalDurationSec).coerceIn(0.0, 1.0).toFloat()
+
+                    androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+                        val strokeWidth = 4.dp.toPx()
+                        val diameter = size.minDimension - strokeWidth
+                        val radius = diameter / 2
+                        val arcSize = androidx.compose.ui.geometry.Size(diameter, diameter)
+                        val arcOffset = Offset(
+                            (size.width - diameter) / 2,
+                            (size.height - diameter) / 2
+                        )
+
+                        // Background grey ring
+                        drawCircle(
+                            color = Color.White.copy(alpha = 0.15f),
+                            radius = radius,
+                            style = Stroke(width = strokeWidth)
+                        )
+
+                        // Foreground blue progress arc
+                        drawArc(
+                            color = Color(0xFF3B82F6),
+                            startAngle = -90f,
+                            sweepAngle = progressFraction * 360f,
+                            useCenter = false,
+                            style = Stroke(
+                                width = strokeWidth,
+                                cap = androidx.compose.ui.graphics.StrokeCap.Round
+                            ),
+                            size = arcSize,
+                            topLeft = arcOffset
                         )
                     }
+
+                    if (isFocused) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color(0x33000000)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
                 }
             }
-        }
-        
-        Spacer(modifier = Modifier.height(6.dp))
-        
-        Text(
-            text = movie.title.cleanTitle(),
-            style = MaterialTheme.typography.labelSmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            color = if (isFocused) Color.White else Color.White.copy(alpha = 0.6f),
-            fontWeight = if (isFocused) FontWeight.Bold else FontWeight.Normal,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp).then(
-                if (isFocused) Modifier.basicMarquee(iterations = Int.MAX_VALUE, velocity = 50.dp, initialDelayMillis = 1000) else Modifier
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Text(
+                text = movie.title.cleanTitle(),
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = if (isFocused) Color.White else Color.White.copy(alpha = 0.6f),
+                fontWeight = if (isFocused) FontWeight.Bold else FontWeight.Normal,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp)
+                    .then(
+                        if (isFocused) Modifier.basicMarquee(
+                            iterations = Int.MAX_VALUE,
+                            velocity = 50.dp,
+                            initialDelayMillis = 1000
+                        ) else Modifier
+                    )
             )
-        )
-        
-        val progressMin = (progressSec / 60.0).toInt()
-        Text(
-            text = "$progressMin MIN",
-            style = MaterialTheme.typography.bodySmall,
-            color = Color(0xFF60A5FA),
-            fontWeight = FontWeight.Black,
-            fontSize = 9.sp,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth()
-        )
-    } // end Column
+
+            val progressMin = (progressSec / 60.0).toInt()
+            Text(
+                text = "$progressMin MIN",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF60A5FA),
+                fontWeight = FontWeight.Black,
+                fontSize = 9.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+        } // end Column
     } // end Box
 }
 
@@ -455,11 +490,11 @@ fun SeeMoreCard(
     focusRequester: FocusRequester = remember { FocusRequester() }
 ) {
     var isFocused by remember { mutableStateOf(false) }
-
     val isCategoryActive = LocalCategoryActive.current
-
+    val isDetailsActive = LocalDetailsActive.current
+    val isPlayerActive = LocalPlayerOverlayActive.current
     // Focus restoration logic
-    LaunchedEffect(isCategoryActive, screenKey, focusRequester) {
+    LaunchedEffect(isCategoryActive, screenKey, focusRequester, DataCache.focusRestorationTrigger) {
         if (!isCategoryActive && screenKey != null) {
             val restoreKey = DataCache.categoryIdToRestore
             val shouldRestore = if (restoreKey != null) {
@@ -467,31 +502,35 @@ fun SeeMoreCard(
             } else {
                 DataCache.globalLastFocusedKey == screenKey
             }
-
             if (shouldRestore) {
                 delay(50) // Tiny delay for UI settling
                 try {
                     focusRequester.requestFocus()
-                } catch (e: Exception) {}
+                } catch (e: Exception) {
+                }
                 if (restoreKey != null) {
                     DataCache.categoryIdToRestore = null
                 }
             }
         }
     }
-    
+
     val rotation by animateFloatAsState(
         targetValue = if (isFocused) 360f else 0f,
         animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing),
         label = "rotation"
     )
-
     Surface(
         onClick = onClick,
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1.1f),
         border = ClickableSurfaceDefaults.border(
             border = Border(androidx.compose.foundation.BorderStroke(1.dp, Color.Transparent)),
-            focusedBorder = Border(androidx.compose.foundation.BorderStroke(2.dp, Color(0xFFFFE000)))
+            focusedBorder = Border(
+                androidx.compose.foundation.BorderStroke(
+                    2.dp,
+                    Color(0xFFFFE000)
+                )
+            )
         ),
         glow = ClickableSurfaceDefaults.glow(
             focusedGlow = Glow(Color(0xFFFFE000).copy(alpha = 0.5f), 15.dp)
@@ -505,9 +544,12 @@ fun SeeMoreCard(
             .width(110.dp)
             .aspectRatio(2f / 3f)
             .focusRequester(focusRequester)
-            .onFocusChanged { 
+            .focusProperties {
+                right = FocusRequester.Cancel
+            }
+            .onFocusChanged {
                 isFocused = it.isFocused
-                if (it.isFocused && screenKey != null) {
+                if (it.isFocused && screenKey != null && !isCategoryActive && !isDetailsActive && !isPlayerActive) {
                     DataCache.globalLastFocusedKey = screenKey
                 }
             }
@@ -548,9 +590,9 @@ fun SeeMoreCard(
                         modifier = Modifier.size(28.dp)
                     )
                 }
-                
+
                 Spacer(modifier = Modifier.height(18.dp))
-                
+
                 Text(
                     text = "VER MÁS",
                     color = Color.White,
@@ -558,7 +600,7 @@ fun SeeMoreCard(
                     fontWeight = FontWeight.ExtraBold,
                     letterSpacing = 0.5.sp
                 )
-                
+
                 if (remainingCount > 0) {
                     Text(
                         text = "+$remainingCount títulos",
@@ -581,28 +623,30 @@ fun HeroSection(
     onMovieClick: (Movie) -> Unit,
     modifier: Modifier = Modifier,
     onFocused: () -> Unit = {},
-    initialFocusRequester: FocusRequester? = null,
+    heroFocusRequester: FocusRequester? = null,
+    requestInitialFocus: Boolean = false,
+    downFocus: FocusRequester? = null,
     screenKey: String? = null
 ) {
     // Basic Carousel for Hero (persisted in DataCache)
     val currentIndex = DataCache.heroCurrentIndex
     var isAnyElementFocused by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
-    
+
     // Track if the user has explicitly interacted with the Hero (e.g., moved within it or clicked)
     // This allows the carousel to scroll on startup even if focused by default.
     var hasInteractedWithHero by remember { mutableStateOf(false) }
-    
+
     // Auto-update info when movie list changes
     val movie = if (movies.isNotEmpty()) movies[currentIndex % movies.size] else null
-
     val scope = rememberCoroutineScope()
     val isFavorite = remember(movie, DataCache.currentUser) {
         val id = movie?.id
         DataCache.currentUser?.favorites?.any { it.id == id } == true
     }
-
     val isDetailsActive = LocalDetailsActive.current
+    val isCategoryActive = LocalCategoryActive.current
+    val isPlayerActive = LocalPlayerOverlayActive.current
     // Focus restoration logic for Hero Section
     LaunchedEffect(isDetailsActive) {
         if (!isDetailsActive && screenKey != null && DataCache.globalLastFocusedKey == screenKey) {
@@ -613,11 +657,11 @@ fun HeroSection(
                 delay(50)
                 try {
                     focusRequester.requestFocus()
-                } catch (e: Exception) {}
+                } catch (e: Exception) {
+                }
             }
         }
     }
-
     // Automatic carousel logic
     LaunchedEffect(movies, isAnyElementFocused, hasInteractedWithHero) {
         // Scroll if no focus OR if focused but user hasn't interacted yet (initial entry)
@@ -628,15 +672,16 @@ fun HeroSection(
             }
         }
     }
-
     // Initial focus request
     LaunchedEffect(Unit) {
-        if (initialFocusRequester != null) {
-            delay(300)
-            initialFocusRequester.requestFocus()
+        if (heroFocusRequester != null && requestInitialFocus) {
+            delay(100)
+            try {
+                heroFocusRequester.requestFocus()
+            } catch (e: Exception) {
+            }
         }
     }
-
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -646,7 +691,7 @@ fun HeroSection(
                     isAnyElementFocused = true
                     onFocused()
                     // If we focus the Hero, save the currently displayed movie ID
-                    if (screenKey != null && movie != null) {
+                    if (screenKey != null && movie != null && !isDetailsActive && !isCategoryActive && !isPlayerActive) {
                         DataCache.lastFocusedMovieId[screenKey] = movie.id
                         DataCache.globalLastFocusedKey = screenKey
                     }
@@ -672,7 +717,7 @@ fun HeroSection(
                         )
                     )
             )
-            
+
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
@@ -685,9 +730,9 @@ fun HeroSection(
                     fontWeight = FontWeight.Bold,
                     color = Color.White
                 )
-                
+
                 Spacer(modifier = Modifier.height(12.dp))
-                
+
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     // HD Badge
                     Box(
@@ -703,9 +748,7 @@ fun HeroSection(
                             fontSize = 10.sp
                         )
                     }
-
                     Spacer(modifier = Modifier.width(12.dp))
-
                     // Rating
                     Icon(
                         imageVector = Icons.Default.Star,
@@ -719,16 +762,13 @@ fun HeroSection(
                         fontWeight = FontWeight.Bold,
                         color = Gold
                     )
-
                     Spacer(modifier = Modifier.width(12.dp))
-
                     // Year
                     Text(
                         text = m.release_date?.take(4) ?: "",
                         style = MaterialTheme.typography.bodyMedium,
                         color = Color.White
                     )
-
                     if (!m.certification.isNullOrBlank()) {
                         Spacer(modifier = Modifier.width(12.dp))
                         // Age Rating Badge
@@ -736,7 +776,10 @@ fun HeroSection(
                         val isAdult = formattedCert.contains("18")
                         Box(
                             modifier = Modifier
-                                .background(if (isAdult) Color.Red else Gold, RoundedCornerShape(2.dp))
+                                .background(
+                                    if (isAdult) Color.Red else Gold,
+                                    RoundedCornerShape(2.dp)
+                                )
                                 .padding(horizontal = 4.dp, vertical = 1.dp)
                         ) {
                             Text(
@@ -748,9 +791,7 @@ fun HeroSection(
                             )
                         }
                     }
-
                     Spacer(modifier = Modifier.width(12.dp))
-
                     // Runtime
                     val hours = (m.runtime ?: 0) / 60
                     val minutes = (m.runtime ?: 0) % 60
@@ -761,9 +802,9 @@ fun HeroSection(
                         color = Color.White
                     )
                 }
-                
+
                 Spacer(modifier = Modifier.height(16.dp))
-                
+
                 Text(
                     text = if (m.overview.isNullOrBlank()) "Sin sinopsis disponible." else m.overview!!,
                     maxLines = 3,
@@ -772,9 +813,7 @@ fun HeroSection(
                     overflow = TextOverflow.Ellipsis,
                     lineHeight = 22.sp
                 )
-
                 Spacer(modifier = Modifier.height(16.dp))
-
                 // Genres Row
                 if (!m.genres.isNullOrEmpty()) {
                     Box(
@@ -801,13 +840,12 @@ fun HeroSection(
                         }
                     }
                 }
-
                 Spacer(modifier = Modifier.height(32.dp))
-                
+
                 Row {
                     val sidebarRequesters = LocalTabFocusRequesters.current
                     val selectedTab = LocalSelectedTab.current
-                    
+
                     var isVerAhoraFocused by remember { mutableStateOf(false) }
                     val verAhoraScale by animateFloatAsState(
                         targetValue = if (isVerAhoraFocused) 1.1f else 1.0f,
@@ -824,14 +862,13 @@ fun HeroSection(
                         animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
                         label = "color"
                     )
-
                     Button(
-                        onClick = { 
+                        onClick = {
                             hasInteractedWithHero = true
-                            onMovieClick(m) 
+                            onMovieClick(m)
                         },
                         modifier = Modifier
-                            .onFocusChanged { 
+                            .onFocusChanged {
                                 isVerAhoraFocused = it.isFocused
                                 if (it.isFocused) onFocused()
                                 // If focused AND moving or clicking, mark as interacted
@@ -839,17 +876,23 @@ fun HeroSection(
                                     // We'll set this to true if the user actually does something
                                 }
                             }
-                            .onPreviewKeyEvent { 
+                            .onPreviewKeyEvent {
                                 if (it.type == KeyEventType.KeyDown) {
                                     hasInteractedWithHero = true
                                 }
                                 false
                             }
                             .focusRequester(focusRequester)
-                            .then(if (initialFocusRequester != null) Modifier.focusRequester(initialFocusRequester) else Modifier)
-                            .focusProperties { 
+                            .then(
+                                if (heroFocusRequester != null) Modifier.focusRequester(
+                                    heroFocusRequester
+                                ) else Modifier
+                            )
+                            .focusProperties {
                                 up = FocusRequester.Cancel
-                                left = if (sidebarRequesters.isNotEmpty()) sidebarRequesters[selectedTab] else FocusRequester.Default
+                                if (downFocus != null) down = downFocus
+                                left =
+                                    if (sidebarRequesters.isNotEmpty()) sidebarRequesters[selectedTab] else FocusRequester.Default
                             }
                             .zIndex(if (isVerAhoraFocused) 1f else 0f)
                             .graphicsLayer {
@@ -894,7 +937,6 @@ fun HeroSection(
                         }
                     }
                     Spacer(modifier = Modifier.width(16.dp))
-
                     var isMasInfoFocused by remember { mutableStateOf(false) }
                     val masInfoScale by animateFloatAsState(
                         targetValue = if (isMasInfoFocused) 1.1f else 1.0f,
@@ -902,11 +944,12 @@ fun HeroSection(
                         label = "scale"
                     )
                     val masInfoContentColor by animateColorAsState(
-                        targetValue = if (isMasInfoFocused) Color(0xFF3A3000) else if (isFavorite) Gold else Color.White.copy(alpha = 0.8f),
+                        targetValue = if (isMasInfoFocused) Color(0xFF3A3000) else if (isFavorite) Gold else Color.White.copy(
+                            alpha = 0.8f
+                        ),
                         animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
                         label = "color"
                     )
-
                     Button(
                         onClick = {
                             hasInteractedWithHero = true
@@ -923,7 +966,7 @@ fun HeroSection(
                                     if (savedUser != null) {
                                         DataCache.currentUser = savedUser
                                     }
-                                    
+
                                     val eventName = if (isFavorite) "💔 Unlike" else "❤️ Like"
                                     SupabaseManager.logEvent(
                                         DbEvent(
@@ -938,18 +981,18 @@ fun HeroSection(
                             }
                         },
                         modifier = Modifier
-                            .onFocusChanged { 
+                            .onFocusChanged {
                                 isMasInfoFocused = it.isFocused
-                                if (it.isFocused) onFocused() 
+                                if (it.isFocused) onFocused()
                             }
-                            .onPreviewKeyEvent { 
+                            .onPreviewKeyEvent {
                                 if (it.type == KeyEventType.KeyDown) {
                                     hasInteractedWithHero = true
                                 }
                                 false
                             }
-                            .focusProperties { 
-                                up = FocusRequester.Cancel 
+                            .focusProperties {
+                                up = FocusRequester.Cancel
                             }
                             .zIndex(if (isMasInfoFocused) 1f else 0f)
                             .graphicsLayer {
@@ -993,7 +1036,6 @@ fun HeroSection(
                 }
             }
         }
-
         // Carousel Indicators
         if (movies.size > 1) {
             Row(
@@ -1026,11 +1068,9 @@ fun ErrorScreen(
     modifier: Modifier = Modifier
 ) {
     val focusRequester = remember { FocusRequester() }
-
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
     }
-
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -1048,9 +1088,9 @@ fun ErrorScreen(
                 tint = Color.White.copy(alpha = 0.2f),
                 modifier = Modifier.size(80.dp)
             )
-            
+
             Spacer(modifier = Modifier.height(24.dp))
-            
+
             Text(
                 text = "¡UPS! ALGO SALIÓ MAL",
                 style = MaterialTheme.typography.headlineMedium,
@@ -1058,22 +1098,22 @@ fun ErrorScreen(
                 fontWeight = FontWeight.Black,
                 letterSpacing = 2.sp
             )
-            
+
             Spacer(modifier = Modifier.height(12.dp))
-            
+
             Text(
-                text = if (message.contains("timeout", ignoreCase = true)) 
+                text = if (message.contains("timeout", ignoreCase = true))
                     "La conexión con el servidor ha tardado demasiado.\nPor favor, verifica tu internet e intenta de nuevo."
-                    else message,
+                else message,
                 style = MaterialTheme.typography.bodyLarge,
                 color = Color.White.copy(alpha = 0.6f),
                 textAlign = TextAlign.Center,
                 modifier = Modifier.widthIn(max = 500.dp),
                 lineHeight = 24.sp
             )
-            
+
             Spacer(modifier = Modifier.height(48.dp))
-            
+
             Surface(
                 onClick = onRetry,
                 modifier = Modifier

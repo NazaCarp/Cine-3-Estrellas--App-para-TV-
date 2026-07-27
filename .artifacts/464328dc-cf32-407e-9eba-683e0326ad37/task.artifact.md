@@ -1,4 +1,0 @@
-- [ ] Generar APK Release
-    - [ ] Ejecutar tarea `app:assembleRelease`
-    - [ ] Verificar existencia del APK en `app/build/outputs/apk/release/`
-- [ ] Notificar al usuario la ubicación del archivo

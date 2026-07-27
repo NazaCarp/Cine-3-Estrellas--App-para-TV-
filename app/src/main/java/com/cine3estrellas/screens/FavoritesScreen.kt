@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,6 +30,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -52,6 +54,7 @@ import androidx.tv.material3.*
 import coil.compose.AsyncImage
 import com.cine3estrellas.*
 import io.github.jan.supabase.postgrest.from
+import io.github.jan.supabase.postgrest.query.Columns
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -71,7 +74,6 @@ fun FavoritesScreen(onMovieClick: (Int) -> Unit) {
     val scope = rememberCoroutineScope()
     val sidebarRequesters = LocalTabFocusRequesters.current
     val selectedTab = LocalSelectedTab.current
-
     // ── State ──────────────────────────────────────────────────────────────────
     val favoriteIds = remember(DataCache.currentUser) {
         DataCache.currentUser?.favorites?.map { it.id }?.reversed() ?: emptyList()
@@ -82,36 +84,40 @@ fun FavoritesScreen(onMovieClick: (Int) -> Unit) {
     var minRating by remember { mutableDoubleStateOf(0.0) }
     var selectedYear by remember { mutableStateOf<String?>(null) }
     var activeFilterMenu by remember { mutableStateOf<String?>(null) }
-
     // Focus requesters for filter row
+    val contentRequesters = LocalTabContentFocusRequesters.current
+    val favEntryFocusRequester = contentRequesters.getOrNull(3) ?: remember { FocusRequester() }
     val sortFR = remember { FocusRequester() }
     val ratingFR = remember { FocusRequester() }
     val yearFR = remember { FocusRequester() }
     val editFR = remember { FocusRequester() }
     var editMode by remember { mutableStateOf(false) }
-
     // Exit edit mode on back press
     BackHandler(enabled = editMode) {
         editMode = false
     }
-
     // ── Fetch favorite movies ──────────────────────────────────────────────────
     LaunchedEffect(favoriteIds) {
-        if (favoriteIds.isEmpty()) { allMovies = emptyList(); return@LaunchedEffect }
-        isLoading = true
-        try {
-            val fetched = SupabaseManager.client.from("movies")
-                .select { filter { isIn("id", favoriteIds) } }
-                .decodeList<Movie>()
-            // Default order = date added (newest first, per favoriteIds order)
-            allMovies = favoriteIds.mapNotNull { id -> fetched.find { it.id == id } }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        } finally {
-            isLoading = false
+        if (favoriteIds.isEmpty()) {
+            allMovies = emptyList()
+            return@LaunchedEffect
         }
+        val missingIds = favoriteIds.filter { !DataCache.movieCardCache.containsKey(it) }
+        if (missingIds.isNotEmpty()) {
+            isLoading = true
+            try {
+                val fetched = SupabaseManager.client.from("movies")
+                    .select(columns = Columns.list("id", "title", "poster_path", "backdrop_path", "vote_average", "genre_ids", "release_date")) { filter { isIn("id", missingIds) } }
+                    .decodeList<Movie>()
+                DataCache.cacheMovies(fetched)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                isLoading = false
+            }
+        }
+        allMovies = favoriteIds.mapNotNull { id -> DataCache.movieCardCache[id] }
     }
-
     // ── Derived: sorted & filtered list ───────────────────────────────────────
     val displayMovies = remember(allMovies, sortMode, minRating, selectedYear) {
         var list = allMovies.toList()
@@ -122,7 +128,10 @@ fun FavoritesScreen(onMovieClick: (Int) -> Unit) {
         if (currYear != null && currYear != "all") {
             list = when (currYear) {
                 "classic" -> list.filter { (it.release_date ?: "9999") < "2000" }
-                "2000" -> list.filter { val y = it.release_date ?: "9999"; y >= "2000" && y < "2010" }
+                "2000" -> list.filter {
+                    val y = it.release_date ?: "9999"; y >= "2000" && y < "2010"
+                }
+
                 else -> list.filter { (it.release_date ?: "9999") >= currYear }
             }
         }
@@ -135,20 +144,22 @@ fun FavoritesScreen(onMovieClick: (Int) -> Unit) {
         }
         list
     }
-
-    // Continuous focus requesters
-    val focusRequesters = remember(displayMovies.size) { List(displayMovies.size) { FocusRequester() } }
-
+    // Map of movie.id to FocusRequester
+    val focusRequesters = remember { mutableStateMapOf<Int, FocusRequester>() }
+    val gridState = rememberLazyGridState()
     // Auto-focus first card when entering edit mode
     LaunchedEffect(editMode) {
-        if (editMode && focusRequesters.isNotEmpty()) {
-            try { focusRequesters[0].requestFocus() } catch (e: Exception) {}
+        if (editMode && displayMovies.isNotEmpty()) {
+            try {
+                displayMovies.firstOrNull()?.let {
+                    focusRequesters.getOrPut(it.id) { FocusRequester() }.requestFocus()
+                }
+            } catch (e: Exception) {
+            }
         }
     }
-
     // ── Hero movie = first in displayMovies ───────────────────────────────────
     val heroMovie = displayMovies.firstOrNull()
-
     // ── Genre stats ───────────────────────────────────────────────────────────
     val genreStats = remember(allMovies) {
         val map = mutableMapOf<Int, Int>()
@@ -165,267 +176,355 @@ fun FavoritesScreen(onMovieClick: (Int) -> Unit) {
     )
 
     // ── Layout ────────────────────────────────────────────────────────────────
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .graphicsLayer { clip = false }
-    ) {
-        // ── Hero Banner ───────────────────────────────────────────────────────
+    Box(modifier = Modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
-            .fillMaxWidth()
-            .height(180.dp)
+                .size(1.dp)
+                .focusRequester(favEntryFocusRequester)
+                .onFocusChanged {
+                    if (it.isFocused) {
+                        val lastKey = DataCache.globalLastFocusedKey
+                        if (lastKey == "favorites" && displayMovies.isNotEmpty()) {
+                            DataCache.focusRestorationTrigger++
+                        } else {
+                            sortFR.requestFocus()
+                        }
+                    }
+                }
+                .focusable()
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { clip = false }
         ) {
-            // Background image
-            if (heroMovie != null) {
-                AsyncImage(
-                    model = "https://image.tmdb.org/t/p/original${heroMovie.backdrop_path ?: heroMovie.poster_path}",
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0A0C10)))
-            }
-
-            // Gradient overlay
+            // ── Hero Banner ───────────────────────────────────────────────────────
             Box(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            0f to Color(0x66000000),
-                            0.5f to Color(0x55000000),
-                            1f to Color.Black
-                        )
-                    )
-            )
-            // Hero content
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 48.dp, bottom = 40.dp, end = 320.dp)
+                    .fillMaxWidth()
+                    .height(180.dp)
             ) {
-                // Badge row
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.padding(bottom = 10.dp)
-                ) {
+                // Background image
+                if (heroMovie != null) {
+                    AsyncImage(
+                        model = "https://image.tmdb.org/t/p/original${heroMovie.backdrop_path ?: heroMovie.poster_path}",
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
                     Box(
                         modifier = Modifier
-                            .background(Gold.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
-                            .border(1.dp, Gold.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
-                            .padding(horizontal = 8.dp, vertical = 3.dp)
-                    ) {
-                        Text(
-                            "❤\uFE0F FAVORITO",
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Black,
-                            color = Gold,
-                            letterSpacing = 0.15.em
-                        )
-                    }
-                    if (heroMovie != null) {
-                        Icon(Icons.Default.Star, null, tint = Gold, modifier = Modifier.size(12.dp))
-                        Text(
-                            "${heroMovie.vote_average ?: "—"}",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Gold
-                        )
-                        Text("•", color = Color.White.copy(alpha = 0.4f), fontSize = 11.sp)
-                        Text(
-                            heroMovie.release_date?.take(4) ?: "",
-                            fontSize = 11.sp,
-                            color = Color.White.copy(alpha = 0.7f)
-                        )
-                    }
-                }
-
-                // Title
-                Text(
-                    text = heroMovie?.title?.cleanTitle() ?: "MIS FAVORITOS",
-                    style = MaterialTheme.typography.headlineLarge,
-                    fontWeight = FontWeight.Black,
-                    color = Color.White,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            // Stats panel (top-right corner)
-            FavoritesStatsPanel(
-                total = allMovies.size,
-                filtered = displayMovies.size,
-                genreStats = genreStats,
-                genreNames = tmdbGenreNames,
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = 48.dp)
-            )
-        }
-
-        // ── Controls row ──────────────────────────────────────────────────────
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 48.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Left: count info
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(
-                    "${displayMovies.size}",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Black,
-                    color = Gold
-                )
-                Text(
-                    "PELÍCULAS",
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White.copy(alpha = 0.5f),
-                    letterSpacing = 0.2.em
-                )
-                if (displayMovies.size != allMovies.size) {
-                    Text("•", color = Color.White.copy(alpha = 0.3f))
-                    Text(
-                        "de ${allMovies.size} total",
-                        fontSize = 10.sp,
-                        color = Color.White.copy(alpha = 0.4f)
+                            .fillMaxSize()
+                            .background(Color(0xFF0A0C10))
                     )
                 }
-            }
-
-            // Right: filter buttons
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                FavFilterChip(
-                    text = sortMode.label.uppercase(),
-                    icon = Icons.Outlined.FilterList,
-                    isActive = sortMode != FavSortMode.DATE_ADDED,
-                    onClick = { activeFilterMenu = "sort" },
-                    leftFR = if (sidebarRequesters.isNotEmpty()) sidebarRequesters[selectedTab] else null,
-                    rightFR = ratingFR,
-                    modifier = Modifier.focusRequester(sortFR)
-                )
-                FavFilterChip(
-                    text = if (minRating > 0.0) "$minRating+ ★" else "ESTRELLAS",
-                    icon = Icons.Outlined.StarBorder,
-                    isActive = minRating > 0.0,
-                    onClick = { activeFilterMenu = "stars" },
-                    leftFR = sortFR,
-                    rightFR = yearFR,
-                    modifier = Modifier.focusRequester(ratingFR)
-                )
-                FavFilterChip(
-                    text = when (selectedYear) {
-                        null, "all" -> "AÑO"
-                        "classic" -> "RETRO"
-                        "2000" -> "2000s"
-                        else -> "$selectedYear+"
-                    },
-                    icon = Icons.Outlined.CalendarMonth,
-                    isActive = selectedYear != null && selectedYear != "all",
-                    onClick = { activeFilterMenu = "year" },
-                    leftFR = ratingFR,
-                    rightFR = editFR,
-                    modifier = Modifier.focusRequester(yearFR)
-                )
-                FavEditButton(
-                    isActive = editMode,
-                    onClick = { editMode = !editMode },
-                    leftFR = yearFR,
-                    modifier = Modifier.focusRequester(editFR)
-                )
-            }
-        }
-
-        if (isLoading) {
-            Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = Gold)
-            }
-        } else if (allMovies.isEmpty()) {
-            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                FavoritesEmptyState()
-            }
-        } else {
-            // ── Favorites Grid ──────────────────────────────────────────────────
-            BoxWithConstraints(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                val gridWidth = maxWidth
-                val itemWidth = 98.dp
-                val spacing = 12.dp
-                val columnCount = ((gridWidth - 96.dp + spacing) / (itemWidth + spacing)).toInt().coerceAtLeast(1)
-
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(itemWidth),
-                    horizontalArrangement = Arrangement.spacedBy(spacing),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                // Gradient overlay
+                Box(
                     modifier = Modifier
-                        .fillMaxSize(),
-                    contentPadding = PaddingValues(
-                        start = 48.dp,
-                        end = 48.dp,
-                        top = 16.dp, 
-                        bottom = 150.dp
-                    )
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                0f to Color(0x66000000),
+                                0.5f to Color(0x55000000),
+                                1f to Color.Black
+                            )
+                        )
+                )
+                // Hero content
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 48.dp, bottom = 40.dp, end = 320.dp)
                 ) {
-                    itemsIndexed(displayMovies) { index, movie ->
-                        val fr = focusRequesters.getOrNull(index) ?: remember { FocusRequester() }
-                        val nextFr = if (index + 1 < focusRequesters.size) focusRequesters[index + 1] else null
-                        
-                        FavMovieCard(
-                            movie = movie,
-                            isFirstInRow = (index % columnCount == 0),
-                            editMode = editMode,
-                            onMovieClick = { onMovieClick(movie.id) },
-                            onRemove = {
-                                val user = DataCache.currentUser
-                                if (user != null) {
-                                    scope.launch {
-                                        val newFavorites = user.favorites.filter { it.id != movie.id }
-                                        val updatedUser = user.copy(favorites = newFavorites)
-                                        val savedUser = SupabaseManager.upsertUser(updatedUser)
-                                        if (savedUser != null) {
-                                            DataCache.currentUser = savedUser
+                    // Badge row
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.padding(bottom = 10.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .background(Gold.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                                .border(1.dp, Gold.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 8.dp, vertical = 3.dp)
+                        ) {
+                            Text(
+                                "❤\uFE0F FAVORITO",
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Black,
+                                color = Gold,
+                                letterSpacing = 0.15.em
+                            )
+                        }
+                        if (heroMovie != null) {
+                            Icon(
+                                Icons.Default.Star,
+                                null,
+                                tint = Gold,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Text(
+                                "${heroMovie.vote_average ?: "—"}",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Gold
+                            )
+                            Text("•", color = Color.White.copy(alpha = 0.4f), fontSize = 11.sp)
+                            Text(
+                                heroMovie.release_date?.take(4) ?: "",
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.7f)
+                            )
+                        }
+                    }
+                    // Title
+                    Text(
+                        text = heroMovie?.title?.cleanTitle() ?: "MIS FAVORITOS",
+                        style = MaterialTheme.typography.headlineLarge,
+                        fontWeight = FontWeight.Black,
+                        color = Color.White,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                FavoritesStatsPanel(
+                    total = allMovies.size,
+                    filtered = displayMovies.size,
+                    genreStats = genreStats,
+                    genreNames = tmdbGenreNames,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 48.dp)
+                )
+            }
+            // ── Controls row ──────────────────────────────────────────────────────
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 48.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Left: count info
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "${displayMovies.size}",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Black,
+                        color = Gold
+                    )
+                    Text(
+                        "PELÍCULAS",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White.copy(alpha = 0.5f),
+                        letterSpacing = 0.2.em
+                    )
+                    if (displayMovies.size != allMovies.size) {
+                        Text("•", color = Color.White.copy(alpha = 0.3f))
+                        Text(
+                            "de ${allMovies.size} total",
+                            fontSize = 10.sp,
+                            color = Color.White.copy(alpha = 0.4f)
+                        )
+                    }
+                }
+                // Right: filter buttons
+                val firstMovieFr = displayMovies.firstOrNull()
+                    ?.let { focusRequesters.getOrPut(it.id) { FocusRequester() } }
+                    ?: FocusRequester.Default
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    FavFilterChip(
+                        text = sortMode.label.uppercase(),
+                        icon = Icons.Outlined.FilterList,
+                        isActive = sortMode != FavSortMode.DATE_ADDED,
+                        onClick = { activeFilterMenu = "sort" },
+                        leftFR = if (sidebarRequesters.isNotEmpty()) sidebarRequesters[selectedTab] else null,
+                        rightFR = ratingFR,
+                        modifier = Modifier
+                            .focusRequester(sortFR)
+                            .focusProperties {
+                                down = firstMovieFr
+                                up = FocusRequester.Cancel
+                            }
+                    )
+                    FavFilterChip(
+                        text = if (minRating > 0.0) "$minRating+ ★" else "ESTRELLAS",
+                        icon = Icons.Outlined.StarBorder,
+                        isActive = minRating > 0.0,
+                        onClick = { activeFilterMenu = "stars" },
+                        leftFR = sortFR,
+                        rightFR = yearFR,
+                        modifier = Modifier
+                            .focusRequester(ratingFR)
+                            .focusProperties {
+                                down = firstMovieFr
+                                up = FocusRequester.Cancel
+                            }
+                    )
+                    FavFilterChip(
+                        text = when (selectedYear) {
+                            null, "all" -> "AÑO"
+                            "classic" -> "RETRO"
+                            "2000" -> "2000s"
+                            else -> "$selectedYear+"
+                        },
+                        icon = Icons.Outlined.CalendarMonth,
+                        isActive = selectedYear != null && selectedYear != "all",
+                        onClick = { activeFilterMenu = "year" },
+                        leftFR = ratingFR,
+                        rightFR = editFR,
+                        modifier = Modifier
+                            .focusRequester(yearFR)
+                            .focusProperties {
+                                down = firstMovieFr
+                                up = FocusRequester.Cancel
+                            }
+                    )
+                    FavEditButton(
+                        isActive = editMode,
+                        onClick = { editMode = !editMode },
+                        leftFR = yearFR,
+                        modifier = Modifier
+                            .focusRequester(editFR)
+                            .focusProperties {
+                                down = firstMovieFr
+                                up = FocusRequester.Cancel
+                            }
+                    )
+                }
+            }
+            if (isLoading) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(color = Gold)
+                }
+            } else if (allMovies.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                ) {
+                    FavoritesEmptyState()
+                }
+            } else {
+                // ── Favorites Grid ──────────────────────────────────────────────────
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                ) {
+                    val gridWidth = maxWidth
+                    val itemWidth = 98.dp
+                    val spacing = 12.dp
+                    val columnCount =
+                        ((gridWidth - 96.dp + spacing) / (itemWidth + spacing)).toInt()
+                            .coerceAtLeast(1)
+                    LazyVerticalGrid(
+                        state = gridState,
+                        columns = GridCells.Adaptive(itemWidth),
+                        horizontalArrangement = Arrangement.spacedBy(spacing),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            start = 48.dp,
+                            end = 48.dp,
+                            top = 16.dp,
+                            bottom = 150.dp
+                        )
+                    ) {
+                        itemsIndexed(
+                            displayMovies,
+                            key = { _, movie -> movie.id }) { index, movie ->
+                            val fr = focusRequesters.getOrPut(movie.id) { FocusRequester() }
+                            val nextMovie = displayMovies.getOrNull(index + 1)
+                            val nextFr =
+                                if (nextMovie != null) focusRequesters.getOrPut(nextMovie.id) { FocusRequester() } else null
+
+                            FavMovieCard(
+                                movie = movie,
+                                isFirstInRow = (index % columnCount == 0),
+                                editMode = editMode,
+                                onMovieClick = { onMovieClick(movie.id) },
+                                onRemove = {
+                                    val user = DataCache.currentUser
+                                    if (user != null) {
+                                        scope.launch {
+                                            val targetMovie = if (index >= displayMovies.size - 1) {
+                                                displayMovies.getOrNull(index - 1)
+                                            } else {
+                                                displayMovies.getOrNull(index + 1)
+                                            }
+                                            val targetMovieId = targetMovie?.id
+                                            // 1. Focus target movie immediately to prevent focus from escaping the grid
+                                            if (targetMovieId != null) {
+                                                try {
+                                                    focusRequesters.getOrPut(targetMovieId) { FocusRequester() }
+                                                        .requestFocus()
+                                                } catch (e: Exception) {
+                                                    e.printStackTrace()
+                                                }
+                                            }
+                                            val newFavorites =
+                                                user.favorites.filter { it.id != movie.id }
+                                            val updatedUser = user.copy(favorites = newFavorites)
+                                            val savedUser = SupabaseManager.upsertUser(updatedUser)
+                                            if (savedUser != null) {
+                                                focusRequesters.remove(movie.id)
+                                                DataCache.currentUser = savedUser
+
+                                                // 2. Re-request focus on the target movie after recomposition just in case
+                                                delay(100)
+                                                if (targetMovieId != null) {
+                                                    try {
+                                                        focusRequesters.getOrPut(targetMovieId) { FocusRequester() }
+                                                            .requestFocus()
+                                                    } catch (e: Exception) {
+                                                        e.printStackTrace()
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
-                                }
-                            },
-                            upFocusRequester = if (index < columnCount) editFR else null,
-                            focusRequester = fr,
-                            nextFocusRequester = nextFr
-                        )
+                                },
+                                upFocusRequester = if (index < columnCount) editFR else null,
+                                focusRequester = fr,
+                                nextFocusRequester = nextFr
+                            )
+                        }
                     }
                 }
             }
-        }
-    } // end outer Column
-
-
-    // ── Filter dialogs ────────────────────────────────────────────────────────
-    if (activeFilterMenu != null) {
-        FavFilterDialog(
-            menuType = activeFilterMenu!!,
-            currentValue = when (activeFilterMenu) {
-                "stars" -> if (minRating == 0.0) "all" else minRating.toString()
-                "year" -> selectedYear ?: "all"
-                else -> sortMode.name
-            },
-            onDismiss = { activeFilterMenu = null },
-            onSelect = { value ->
-                when (activeFilterMenu) {
-                    "stars" -> minRating = if (value == "all") 0.0 else value.toDouble()
-                    "year" -> selectedYear = if (value == "all") null else value
-                    "sort" -> sortMode = FavSortMode.valueOf(value)
+        } // end outer Column
+        // ── Filter dialogs ────────────────────────────────────────────────────────
+        if (activeFilterMenu != null) {
+            FavFilterDialog(
+                menuType = activeFilterMenu!!,
+                currentValue = when (activeFilterMenu) {
+                    "stars" -> if (minRating == 0.0) "all" else minRating.toString()
+                    "year" -> selectedYear ?: "all"
+                    else -> sortMode.name
+                },
+                onDismiss = { activeFilterMenu = null },
+                onSelect = { value ->
+                    when (activeFilterMenu) {
+                        "stars" -> minRating = if (value == "all") 0.0 else value.toDouble()
+                        "year" -> selectedYear = if (value == "all") null else value
+                        "sort" -> sortMode = FavSortMode.valueOf(value)
+                    }
+                    activeFilterMenu = null
                 }
-                activeFilterMenu = null
-            }
-        )
+            )
+        }
     }
 }
 
@@ -456,8 +555,12 @@ private fun FavoritesStatsPanel(
                 color = Gold,
                 letterSpacing = 0.2.em
             )
-            Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Gold.copy(alpha = 0.3f)))
-
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(Gold.copy(alpha = 0.3f))
+            )
             // Total count
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -471,7 +574,6 @@ private fun FavoritesStatsPanel(
                     color = Color.White
                 )
             }
-
             // Top genres
             if (genreStats.isNotEmpty()) {
                 Text(
@@ -526,7 +628,11 @@ private fun FavoritesStatsPanel(
 }
 
 // ─── Movie card ───────────────────────────────────────────────────────────────
-@OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class, ExperimentalFoundationApi::class)
+@OptIn(
+    ExperimentalTvMaterial3Api::class,
+    androidx.compose.ui.ExperimentalComposeUiApi::class,
+    ExperimentalFoundationApi::class
+)
 @Composable
 private fun FavMovieCard(
     movie: Movie,
@@ -541,13 +647,15 @@ private fun FavMovieCard(
     val sidebarRequesters = LocalTabFocusRequesters.current
     val selectedTab = LocalSelectedTab.current
     val isDetailsActive = LocalDetailsActive.current
-    
+    val isCategoryActive = LocalCategoryActive.current
+    val isPlayerActive = LocalPlayerOverlayActive.current
+
     val scope = rememberCoroutineScope()
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
 
     // Focus restoration logic matching MovieCard
-    LaunchedEffect(isDetailsActive, movie.id, focusRequester) {
+    LaunchedEffect(isDetailsActive, movie.id, focusRequester, DataCache.focusRestorationTrigger) {
         if (!isDetailsActive) {
             val restoreId = DataCache.movieIdToRestore
             val restoreKey = DataCache.keyToRestore
@@ -556,12 +664,12 @@ private fun FavMovieCard(
             } else {
                 DataCache.lastFocusedMovieId["favorites"] == movie.id && DataCache.globalLastFocusedKey == "favorites"
             }
-
             if (shouldRestore) {
                 delay(50) // Tiny delay for UI settling
                 try {
                     focusRequester.requestFocus()
-                } catch (e: Exception) {}
+                } catch (e: Exception) {
+                }
                 if (restoreId != null) {
                     DataCache.movieIdToRestore = null
                     DataCache.keyToRestore = null
@@ -569,20 +677,17 @@ private fun FavMovieCard(
             }
         }
     }
-
     LaunchedEffect(isFocused) {
-        if (isFocused) {
+        if (isFocused && !isDetailsActive && !isCategoryActive && !isPlayerActive) {
             DataCache.lastFocusedMovieId["favorites"] = movie.id
             DataCache.globalLastFocusedKey = "favorites"
         }
     }
-
     val cardScale by animateFloatAsState(
         targetValue = if (isFocused) 1.1f else 1.0f,
         animationSpec = tween(200, easing = FastOutSlowInEasing),
         label = "favMovieCardScale"
     )
-
     Box(
         modifier = Modifier
             .zIndex(if (isFocused) 1f else 0f)
@@ -604,11 +709,25 @@ private fun FavMovieCard(
                 interactionSource = interactionSource,
                 scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
                 border = ClickableSurfaceDefaults.border(
-                    border = Border(androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.1f))),
-                    focusedBorder = Border(androidx.compose.foundation.BorderStroke(2.dp, if (editMode) Color(0xFFFF4444) else Color(0xFFFFE000)))
+                    border = Border(
+                        androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            Color.White.copy(alpha = 0.1f)
+                        )
+                    ),
+                    focusedBorder = Border(
+                        androidx.compose.foundation.BorderStroke(
+                            2.dp,
+                            if (editMode) Color(0xFFFF4444) else Color(0xFFFFE000)
+                        )
+                    )
                 ),
                 glow = ClickableSurfaceDefaults.glow(
-                    focusedGlow = Glow((if (editMode) Color(0xFFFF4444) else Color(0xFFFFE000)).copy(alpha = 0.5f), 10.dp)
+                    focusedGlow = Glow(
+                        (if (editMode) Color(0xFFFF4444) else Color(0xFFFFE000)).copy(
+                            alpha = 0.5f
+                        ), 10.dp
+                    )
                 ),
                 shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
                 modifier = Modifier
@@ -619,7 +738,7 @@ private fun FavMovieCard(
                         left = if (isFirstInRow && sidebarRequesters.isNotEmpty()) {
                             sidebarRequesters[selectedTab]
                         } else FocusRequester.Default
-                        
+
                         right = nextFocusRequester ?: FocusRequester.Cancel
                         if (upFocusRequester != null) up = upFocusRequester
                     }
@@ -631,7 +750,7 @@ private fun FavMovieCard(
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
                     )
-                    
+
                     // Edit mode overlay
                     if (editMode && isFocused) {
                         Box(
@@ -650,16 +769,18 @@ private fun FavMovieCard(
                     }
                 }
             }
-            
+
             Spacer(modifier = Modifier.height(8.dp))
-            
+
             // Info below
             Text(
                 text = movie.title.cleanTitle(),
                 style = MaterialTheme.typography.labelMedium,
                 maxLines = 1,
                 overflow = if (isFocused) TextOverflow.Visible else TextOverflow.Ellipsis,
-                color = if (isFocused) (if (editMode) Color(0xFFFF8888) else Color.White) else Color.White.copy(alpha = 0.7f),
+                color = if (isFocused) (if (editMode) Color(0xFFFF8888) else Color.White) else Color.White.copy(
+                    alpha = 0.7f
+                ),
                 fontWeight = if (isFocused) FontWeight.Bold else FontWeight.Normal,
                 modifier = Modifier
                     .padding(horizontal = 4.dp)
@@ -673,7 +794,7 @@ private fun FavMovieCard(
                         } else Modifier
                     )
             )
-            
+
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(start = 4.dp, end = 4.dp, top = 2.dp)
@@ -687,16 +808,16 @@ private fun FavMovieCard(
                 Text(
                     text = " ${movie.vote_average ?: 0.0} • ${movie.release_date?.take(4) ?: ""}",
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (isFocused) (if (editMode) Color(0xFFFF8888) else Gold) else Color.White.copy(alpha = 0.5f)
+                    color = if (isFocused) (if (editMode) Color(0xFFFF8888) else Gold) else Color.White.copy(
+                        alpha = 0.5f
+                    )
                 )
             }
-
             // Fix vertical visibility when focused
             Spacer(modifier = Modifier.height(24.dp))
         } // end Column
     } // end Box
 }
-
 
 // ─── Empty state ──────────────────────────────────────────────────────────────
 @OptIn(ExperimentalTvMaterial3Api::class)
@@ -714,7 +835,12 @@ private fun FavoritesEmptyState() {
                     .border(1.dp, Gold.copy(alpha = 0.3f), RoundedCornerShape(50)),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Outlined.FavoriteBorder, null, tint = Gold, modifier = Modifier.size(36.dp))
+                Icon(
+                    Icons.Outlined.FavoriteBorder,
+                    null,
+                    tint = Gold,
+                    modifier = Modifier.size(36.dp)
+                )
             }
             Text(
                 "Aún no tenés favoritos",
@@ -766,14 +892,16 @@ private fun FavEditButton(
         },
         animationSpec = tween(200), label = "editBtnIcon"
     )
-
     Surface(
         onClick = onClick,
         modifier = modifier
             .onPreviewKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown) {
                     when (event.key) {
-                        Key.DirectionLeft -> { leftFR?.requestFocus(); leftFR != null }
+                        Key.DirectionLeft -> {
+                            leftFR?.requestFocus(); leftFR != null
+                        }
+
                         else -> false
                     }
                 } else false
@@ -781,8 +909,12 @@ private fun FavEditButton(
             .onFocusChanged { isFocused = it.isFocused }
             .graphicsLayer { scaleX = scale; scaleY = scale },
         colors = ClickableSurfaceDefaults.colors(
-            containerColor = if (isActive) activeColor.copy(alpha = 0.1f) else Color.White.copy(alpha = 0.04f),
-            focusedContainerColor = if (isActive) activeColor.copy(alpha = 0.15f) else Gold.copy(alpha = 0.1f)
+            containerColor = if (isActive) activeColor.copy(alpha = 0.1f) else Color.White.copy(
+                alpha = 0.04f
+            ),
+            focusedContainerColor = if (isActive) activeColor.copy(alpha = 0.15f) else Gold.copy(
+                alpha = 0.1f
+            )
         ),
         border = ClickableSurfaceDefaults.border(
             border = Border(androidx.compose.foundation.BorderStroke(1.dp, borderColor)),
@@ -821,7 +953,6 @@ private fun FavFilterChip(
     modifier: Modifier = Modifier
 ) {
     var isFocused by remember { mutableStateOf(false) }
-
     val borderColor by animateColorAsState(
         targetValue = when {
             isFocused -> Gold
@@ -840,23 +971,28 @@ private fun FavFilterChip(
     )
     val bgColor by animateColorAsState(
         targetValue = if (isFocused) Gold.copy(alpha = 0.12f)
-                      else if (isActive) Gold.copy(alpha = 0.06f)
-                      else Color.White.copy(alpha = 0.04f),
+        else if (isActive) Gold.copy(alpha = 0.06f)
+        else Color.White.copy(alpha = 0.04f),
         animationSpec = tween(200), label = "chipBg"
     )
     val chipScale by animateFloatAsState(
         targetValue = if (isFocused) 1.08f else 1.0f,
         animationSpec = tween(180), label = "chipScale"
     )
-
     Surface(
         onClick = onClick,
         modifier = modifier
             .onPreviewKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown) {
                     when (event.key) {
-                        Key.DirectionLeft -> { leftFR?.requestFocus(); leftFR != null }
-                        Key.DirectionRight -> { rightFR?.requestFocus(); rightFR != null }
+                        Key.DirectionLeft -> {
+                            leftFR?.requestFocus(); leftFR != null
+                        }
+
+                        Key.DirectionRight -> {
+                            rightFR?.requestFocus(); rightFR != null
+                        }
+
                         else -> false
                     }
                 } else false
@@ -911,6 +1047,7 @@ private fun FavFilterDialog(
                 Pair("8.0", "8.0+ (Muy buenas)"),
                 Pair("9.0", "9.0+ (Obras maestras)")
             )
+
             "year" -> listOf(
                 Pair("all", "Cualquier año"),
                 Pair("2024", "Estrenos (2024+)"),
@@ -919,19 +1056,17 @@ private fun FavFilterDialog(
                 Pair("2000", "Clásicos 2000s"),
                 Pair("classic", "Retro (Pre-2000)")
             )
+
             else -> emptyList()
         }
     }
-
     val initialIdx = remember { options.indexOfFirst { it.first == currentValue }.coerceAtLeast(0) }
     val focusRequesters = remember { List(options.size) { FocusRequester() } }
-
     LaunchedEffect(menuType) {
         if (initialIdx in focusRequesters.indices) {
             focusRequesters[initialIdx].requestFocus()
         }
     }
-
     androidx.compose.ui.window.Dialog(
         onDismissRequest = onDismiss,
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
@@ -964,7 +1099,6 @@ private fun FavFilterDialog(
                     letterSpacing = 0.2.em,
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
-
                 options.forEachIndexed { index, (value, label) ->
                     val isSelected = value == currentValue
                     FavDialogOption(
@@ -988,7 +1122,6 @@ private fun FavDialogOption(
     modifier: Modifier = Modifier
 ) {
     var isFocused by remember { mutableStateOf(false) }
-
     val bgColor by animateColorAsState(
         targetValue = when {
             isFocused -> Gold.copy(alpha = 0.15f)
@@ -1004,7 +1137,6 @@ private fun FavDialogOption(
         },
         animationSpec = tween(150), label = "optionText"
     )
-
     Surface(
         onClick = onClick,
         modifier = modifier

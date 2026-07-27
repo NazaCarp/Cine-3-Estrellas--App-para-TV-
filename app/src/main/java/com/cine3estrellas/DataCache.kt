@@ -84,12 +84,24 @@ object DataCache {
     var exploreMinRating by mutableStateOf(0.0)
     var exploreSelectedYear by mutableStateOf<String?>(null)
     var exploreSortBy by mutableStateOf("popularity")
+    var exploreLastFocusedGridIndex by mutableIntStateOf(0)
 
     // --- MOVIE DETAILS CACHE ---
+    // Cache for card-level movie metadata (lightweight representation)
+    val movieCardCache = mutableStateMapOf<Int, Movie>()
+
+    fun cacheMovies(movies: List<Movie>) {
+        movies.forEach { movieCardCache[it.id] = it }
+    }
+
     // Stores detailed movie info by ID
     val movieDetailsMap = mutableStateMapOf<Int, Movie>()
     // Stores similar movies list by movie ID
     val similarMoviesMap = mutableStateMapOf<Int, List<Movie>>()
+
+    // --- VIDEO EXTRACTION CACHE ---
+    // Stores extracted direct video stream URLs by embed URL
+    val extractedUrlsMap = mutableStateMapOf<String, String>()
 
     // --- FOCUS PERSISTENCE ---
     // Stores the ID of the last focused movie for each screen/context
@@ -98,6 +110,9 @@ object DataCache {
     
     // Stores the key of the ABSOLUTE LAST focused context to prevent multiple components from stealing focus
     var globalLastFocusedKey by mutableStateOf<String?>(null)
+
+    // Stores the key of the ABSOLUTE LAST focused context within the Home tab specifically
+    var lastHomeFocusedKey by mutableStateOf<String?>(null)
 
     // Trigger to re-request focus when an overlay closes
     var focusRestorationTrigger by mutableIntStateOf(0)
@@ -112,6 +127,10 @@ object DataCache {
 
     // Current slide index of the Hero carousel
     var heroCurrentIndex by mutableIntStateOf(0)
+
+    // --- NAVIGATION FLAGS ---
+    // Prevents automatic tab switching in the sidebar during sensitive transitions (like post-login)
+    var isTabChangeLocked by mutableStateOf(false)
 
     // --- SCROLL PERSISTENCE ---
     // Key: category ID or row unique key. Value: Pair(index, offset)

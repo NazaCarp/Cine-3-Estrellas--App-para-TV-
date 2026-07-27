@@ -8,10 +8,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.itemsIndexed as listItemsIndexed
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.itemsIndexed
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.CalendarMonth
@@ -51,7 +53,9 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.tv.material3.*
 import com.cine3estrellas.*
 import io.github.jan.supabase.postgrest.from
+import io.github.jan.supabase.postgrest.query.Columns
 import io.github.jan.supabase.postgrest.query.Count
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 
@@ -64,7 +68,9 @@ private val Slate500 = Color(0xFF64748B)
 @Composable
 fun ExploreScreen(onMovieClick: (Int) -> Unit) {
     val isDetailsActive = LocalDetailsActive.current
-    val exploreFocusRequester = LocalExploreFocusRequester.current
+    val contentRequesters = LocalTabContentFocusRequesters.current
+    val exploreEntryFocusRequester = contentRequesters.getOrNull(2) ?: remember { FocusRequester() }
+    val exploreFocusRequester = remember { FocusRequester() }
     // Using DataCache to preserve state across navigation
     var selectedGenre by remember { mutableStateOf(DataCache.exploreSelectedGenre) }
     var genres by remember { mutableStateOf(DataCache.exploreGenres) }
@@ -85,6 +91,9 @@ fun ExploreScreen(onMovieClick: (Int) -> Unit) {
     val yearFocusRequester = remember { FocusRequester() }
     val sortFocusRequester = remember { FocusRequester() }
 
+    // Focus requester for results grid
+    val resultsFocusRequester = remember { FocusRequester() }
+
     // Sync local state to DataCache
     LaunchedEffect(selectedGenre) { DataCache.exploreSelectedGenre = selectedGenre }
     LaunchedEffect(genres) { DataCache.exploreGenres = genres }
@@ -93,6 +102,37 @@ fun ExploreScreen(onMovieClick: (Int) -> Unit) {
     LaunchedEffect(minRating) { DataCache.exploreMinRating = minRating }
     LaunchedEffect(selectedYear) { DataCache.exploreSelectedYear = selectedYear }
     LaunchedEffect(sortBy) { DataCache.exploreSortBy = sortBy }
+
+    val genreListState = rememberLazyListState()
+    var focusedGenreId by remember { mutableStateOf<Int?>(null) }
+    val isAnyGenreFocused = focusedGenreId != null
+    // Índice de la última card del grid con foco (para restaurar al volver de la lista de géneros)
+    var lastFocusedGridIndex by remember { mutableStateOf(DataCache.exploreLastFocusedGridIndex) }
+    LaunchedEffect(lastFocusedGridIndex) { DataCache.exploreLastFocusedGridIndex = lastFocusedGridIndex }
+
+    LaunchedEffect(isAnyGenreFocused, selectedGenre, genres) {
+        if (!isAnyGenreFocused && selectedGenre != null && genres.isNotEmpty()) {
+            val index = genres.indexOfFirst { it.id == selectedGenre?.id }
+            if (index != -1) {
+                try {
+                    genreListState.animateScrollToItem(index)
+                } catch (e: Exception) {
+                }
+            }
+        }
+    }
+
+    var isEntryFocused by remember { mutableStateOf(false) }
+
+    LaunchedEffect(genres, selectedGenre, isEntryFocused) {
+        if (isEntryFocused && genres.isNotEmpty() && selectedGenre != null) {
+            delay(50) // wait for recomposition
+            try {
+                exploreFocusRequester.requestFocus()
+            } catch (e: Exception) {
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         if (genres.isNotEmpty()) return@LaunchedEffect
@@ -113,7 +153,7 @@ fun ExploreScreen(onMovieClick: (Int) -> Unit) {
     fun loadMovies(isNewFilter: Boolean = true) {
         if (selectedGenre == null) return
         if (!isNewFilter && (isLoading || movies.size >= totalCount)) return
-        
+
         errorMessage = null
         if (isNewFilter) {
             movies = emptyList() // Clear immediately to trigger shimmer
@@ -126,7 +166,7 @@ fun ExploreScreen(onMovieClick: (Int) -> Unit) {
                 val toIndex = fromIndex + 39L
 
                 val response = SupabaseManager.client.from("movies")
-                    .select {
+                    .select(columns = Columns.list("id", "title", "poster_path", "backdrop_path", "vote_average", "genre_ids", "release_date", "popularity")) {
                         filter {
                             overlaps("genre_ids", listOf(selectedGenre!!.id))
                             if (minRating > 0.0) gte("vote_average", minRating)
@@ -137,30 +177,32 @@ fun ExploreScreen(onMovieClick: (Int) -> Unit) {
                                         gte("release_date", "2000-01-01")
                                         lt("release_date", "2010-01-01")
                                     }
+
                                     else -> gte("release_date", "$selectedYear-01-01")
                                 }
                             }
                         }
-                        
-                        val sortColumn = when(sortBy) {
+
+                        val sortColumn = when (sortBy) {
                             "popularity" -> "popularity"
                             "vote_average" -> "vote_average"
                             "release_date" -> "release_date"
                             "title" -> "title"
                             else -> "popularity"
                         }
-                        
-                        val sortOrder = if (sortBy == "title") 
-                            io.github.jan.supabase.postgrest.query.Order.ASCENDING 
-                        else 
+
+                        val sortOrder = if (sortBy == "title")
+                            io.github.jan.supabase.postgrest.query.Order.ASCENDING
+                        else
                             io.github.jan.supabase.postgrest.query.Order.DESCENDING
-                        
+
                         order(sortColumn, sortOrder)
                         if (isNewFilter) count(Count.EXACT)
                         range(fromIndex, toIndex)
                     }
-                
+
                 val newResults = response.decodeList<Movie>()
+                DataCache.cacheMovies(newResults)
                 if (isNewFilter) {
                     movies = newResults
                     totalCount = response.countOrNull() ?: newResults.size.toLong()
@@ -180,10 +222,8 @@ fun ExploreScreen(onMovieClick: (Int) -> Unit) {
 
     // This effect triggers whenever filters change
     LaunchedEffect(selectedGenre, minRating, selectedYear, sortBy) {
-        // We only skip if we are restoring state AND movies are already loaded
-        // To be safe and ensure filters work, we only skip if the current movies 
-        // matches the DataCache AND movies is not empty.
-        // However, it's safer to just reload if any of these change.
+        // Reset grid focus index when filters change so it always starts at the first card
+        lastFocusedGridIndex = 0
         loadMovies(isNewFilter = true)
     }
 
@@ -207,304 +247,409 @@ fun ExploreScreen(onMovieClick: (Int) -> Unit) {
             }
         )
     } else {
-        Row(modifier = Modifier.fillMaxSize()) {
-        // 2 & 3. Sidebar: "GÉNEROS"
-        Column(
-            modifier = Modifier
-                .width(220.dp)
-                .fillMaxHeight()
-                .background(Color.Transparent)
-        ) {
-            // Title GÉNEROS
+        Box(modifier = Modifier.fillMaxSize()) {
             Box(
                 modifier = Modifier
-                    .padding(top = 10.dp, start = 16.dp, end = 16.dp, bottom = 8.dp)
-                    .fillMaxWidth()
-            ) {
-                Column {
-                    Text(
-                        text = "GÉNEROS",
-                        style = TextStyle(
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Black,
-                            color = Color.White.copy(alpha = 0.5f),
-                            letterSpacing = 0.3.em
-                        ),
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-                    Spacer(
+                    .size(1.dp)
+                    .focusRequester(exploreEntryFocusRequester)
+                    .onFocusChanged {
+                        isEntryFocused = it.isFocused
+                        if (it.isFocused) {
+                            try {
+                                exploreFocusRequester.requestFocus()
+                            } catch (e: Exception) {
+                            }
+                        }
+                    }
+                    .focusable()
+            )
+
+            Row(modifier = Modifier.fillMaxSize()) {
+                // 2 & 3. Sidebar: "GÉNEROS"
+                Column(
+                    modifier = Modifier
+                        .width(220.dp)
+                        .fillMaxHeight()
+                        .background(Color.Transparent)
+                ) {
+                    // Title GÉNEROS
+                    Box(
                         modifier = Modifier
+                            .padding(top = 10.dp, start = 16.dp, end = 16.dp, bottom = 8.dp)
                             .fillMaxWidth()
-                            .height(1.dp)
-                            .background(Color.White.copy(alpha = 0.1f))
-                    )
-                }
-            }
-
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(vertical = 8.dp)
-            ) {
-                if (genres.isEmpty()) {
-                    items(10) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 8.dp, horizontal = 16.dp)
-                                .height(20.dp)
-                                .background(Color.White.copy(alpha = 0.05f), RoundedCornerShape(4.dp))
-                        )
-                    }
-                } else {
-                    items(genres) { genre ->
-                        val isSelected = selectedGenre?.id == genre.id
-                        GenreSidebarItem(
-                            genre = genre,
-                            isSelected = isSelected,
-                            onClick = { selectedGenre = genre },
-                            modifier = if (isSelected && exploreFocusRequester != null)
-                                Modifier.focusRequester(exploreFocusRequester)
-                            else Modifier
-                        )
-                    }
-                }
-            }
-        }
-
-        // Right: Content
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .padding(top = 16.dp, start = 24.dp, end = 24.dp)
-        ) {
-            // 4, 5 & 6. Header
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // 4. Main Title EXPLORAR
-                    Text(
-                        text = "EXPLORAR",
-                        style = TextStyle(
-                            fontSize = 23.sp,
-                            fontWeight = FontWeight.Black,
-                            letterSpacing = 0.2.em,
-                            lineHeight = 1.em,
-                            shadow = Shadow(
-                                color = Color.Black.copy(alpha = 0.5f),
-                                offset = androidx.compose.ui.geometry.Offset(2f, 2f),
-                                blurRadius = 4f
+                    ) {
+                        Column {
+                            Text(
+                                text = "GÉNEROS",
+                                style = TextStyle(
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = Color.White.copy(alpha = 0.5f),
+                                    letterSpacing = 0.3.em
+                                ),
+                                modifier = Modifier.padding(bottom = 8.dp)
                             )
-                        ),
-                        modifier = Modifier
-                            .graphicsLayer(alpha = 0.99f)
-                            .drawWithCache {
-                                val brush = Brush.verticalGradient(
-                                    colors = listOf(Color.White, Color.White.copy(alpha = 0.4f))
-                                )
-                                onDrawWithContent {
-                                    drawContent()
-                                    drawRect(brush, blendMode = androidx.compose.ui.graphics.BlendMode.SrcAtop)
-                                }
-                            }
-                    )
+                            Spacer(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(1.dp)
+                                    .background(Color.White.copy(alpha = 0.1f))
+                            )
+                        }
+                    }
 
-                    // 6. Filter Buttons
-                    Row(horizontalArrangement = Arrangement.spacedBy(15.dp)) {
-                        FilterButton(
-                            text = "ESTRELLAS",
-                            icon = Icons.Outlined.StarBorder,
-                            onClick = { activeFilterMenu = "stars" },
-                            modifier = Modifier
-                                .focusRequester(starsFocusRequester)
-                                .focusProperties {
-                                    right = yearFocusRequester
-                                    left = exploreFocusRequester ?: FocusRequester.Default
-                                }
-                        )
-                        FilterButton(
-                            text = "AÑO",
-                            icon = Icons.Outlined.CalendarMonth,
-                            onClick = { activeFilterMenu = "year" },
-                            modifier = Modifier
-                                .focusRequester(yearFocusRequester)
-                                .focusProperties {
-                                    left = starsFocusRequester
-                                    right = sortFocusRequester
-                                }
-                        )
-                        FilterButton(
-                            text = "ORDENAR",
-                            icon = Icons.Outlined.FilterList,
-                            onClick = { activeFilterMenu = "sort" },
-                            modifier = Modifier
-                                .focusRequester(sortFocusRequester)
-                                .focusProperties {
-                                    left = yearFocusRequester
-                                    right = FocusRequester.Cancel
-                                }
-                        )
+                    LazyColumn(
+                        state = genreListState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(vertical = 8.dp)
+                    ) {
+                        if (genres.isEmpty()) {
+                            items(10) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 8.dp, horizontal = 16.dp)
+                                        .height(20.dp)
+                                        .background(
+                                            Color.White.copy(alpha = 0.05f),
+                                            RoundedCornerShape(4.dp)
+                                        )
+                                )
+                            }
+                        } else {
+                            listItemsIndexed(genres) { index, genre ->
+                                val isSelected = selectedGenre?.id == genre.id
+                                GenreSidebarItem(
+                                    genre = genre,
+                                    isSelected = isSelected,
+                                    onClick = { selectedGenre = genre },
+                                    onFocusChanged = { focused ->
+                                        if (focused) {
+                                            focusedGenreId = genre.id
+                                        } else if (focusedGenreId == genre.id) {
+                                            focusedGenreId = null
+                                        }
+                                    },
+                                    modifier = if (isSelected && exploreFocusRequester != null)
+                                        Modifier.focusRequester(exploreFocusRequester)
+                                    else Modifier,
+                                    rightFocus = resultsFocusRequester,
+                                    isTop = (index == 0),
+                                    isBottom = (index == genres.size - 1)
+                                )
+                            }
+                        }
                     }
                 }
-                
-                Spacer(modifier = Modifier.height(10.dp))
 
-                // 5. Subtitle Row (Now below, taking its own line)
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(15.dp)
+                // Right: Content
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(top = 16.dp, start = 24.dp, end = 24.dp)
                 ) {
-                    // Genre Name
-                    Text(
-                        text = selectedGenre?.name?.uppercase() ?: "",
-                        style = TextStyle(
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Black,
-                            color = Gold,
-                            letterSpacing = 0.2.em
-                        )
-                    )
+                    // 4, 5 & 6. Header
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // 4. Main Title EXPLORAR
+                            Text(
+                                text = "EXPLORAR",
+                                style = TextStyle(
+                                    fontSize = 23.sp,
+                                    fontWeight = FontWeight.Black,
+                                    letterSpacing = 0.2.em,
+                                    lineHeight = 1.em,
+                                    shadow = Shadow(
+                                        color = Color.Black.copy(alpha = 0.5f),
+                                        offset = androidx.compose.ui.geometry.Offset(2f, 2f),
+                                        blurRadius = 4f
+                                    )
+                                ),
+                                modifier = Modifier
+                                    .graphicsLayer(alpha = 0.99f)
+                                    .drawWithCache {
+                                        val brush = Brush.verticalGradient(
+                                            colors = listOf(
+                                                Color.White,
+                                                Color.White.copy(alpha = 0.4f)
+                                            )
+                                        )
+                                        onDrawWithContent {
+                                            drawContent()
+                                            drawRect(
+                                                brush,
+                                                blendMode = androidx.compose.ui.graphics.BlendMode.SrcAtop
+                                            )
+                                        }
+                                    }
+                            )
 
-                    // Filters
-                    if (minRating > 0.0) {
-                        Text("•", color = Color.White.copy(alpha = 0.2f), fontSize = 10.sp)
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Icon(Icons.Default.Star, null, tint = Gold, modifier = Modifier.size(12.dp))
-                            Text("${minRating}+", style = TextStyle(fontSize = 10.sp, fontWeight = FontWeight.Black, color = Gold, letterSpacing = 0.2.em))
+                            // 6. Filter Buttons
+                            Row(horizontalArrangement = Arrangement.spacedBy(15.dp)) {
+                                FilterButton(
+                                    text = "ESTRELLAS",
+                                    icon = Icons.Outlined.StarBorder,
+                                    onClick = { activeFilterMenu = "stars" },
+                                    modifier = Modifier
+                                        .focusRequester(starsFocusRequester)
+                                        .focusProperties {
+                                            up = FocusRequester.Cancel
+                                            right = yearFocusRequester
+                                            left = exploreFocusRequester ?: FocusRequester.Default
+                                            down = resultsFocusRequester
+                                        }
+                                )
+                                FilterButton(
+                                    text = "AÑO",
+                                    icon = Icons.Outlined.CalendarMonth,
+                                    onClick = { activeFilterMenu = "year" },
+                                    modifier = Modifier
+                                        .focusRequester(yearFocusRequester)
+                                        .focusProperties {
+                                            up = FocusRequester.Cancel
+                                            left = starsFocusRequester
+                                            right = sortFocusRequester
+                                            down = resultsFocusRequester
+                                        }
+                                )
+                                FilterButton(
+                                    text = "ORDENAR",
+                                    icon = Icons.Outlined.FilterList,
+                                    onClick = { activeFilterMenu = "sort" },
+                                    modifier = Modifier
+                                        .focusRequester(sortFocusRequester)
+                                        .focusProperties {
+                                            up = FocusRequester.Cancel
+                                            left = yearFocusRequester
+                                            right = FocusRequester.Cancel
+                                            down = resultsFocusRequester
+                                        }
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // 5. Subtitle Row (Now below, taking its own line)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(15.dp)
+                        ) {
+                            // Genre Name
+                            Text(
+                                text = selectedGenre?.name?.uppercase() ?: "",
+                                style = TextStyle(
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = Gold,
+                                    letterSpacing = 0.2.em
+                                )
+                            )
+
+                            // Filters
+                            if (minRating > 0.0) {
+                                Text("•", color = Color.White.copy(alpha = 0.2f), fontSize = 10.sp)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Star,
+                                        null,
+                                        tint = Gold,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Text(
+                                        "${minRating}+",
+                                        style = TextStyle(
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Black,
+                                            color = Gold,
+                                            letterSpacing = 0.2.em
+                                        )
+                                    )
+                                }
+                            }
+
+                            if (selectedYear != null && selectedYear != "all") {
+                                Text("•", color = Color.White.copy(alpha = 0.2f), fontSize = 10.sp)
+                                val yearText = when (selectedYear) {
+                                    "classic" -> "RETRO"
+                                    "2000" -> "2000s"
+                                    else -> "${selectedYear}+"
+                                }
+                                Text(
+                                    text = yearText,
+                                    style = TextStyle(
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Black,
+                                        color = Gold,
+                                        letterSpacing = 0.2.em
+                                    )
+                                )
+                            }
+
+                            // Separator
+                            Text(
+                                "|",
+                                color = Color.White.copy(alpha = 0.2f),
+                                fontWeight = FontWeight.Normal,
+                                fontSize = 10.sp
+                            )
+
+                            // Matches Count
+                            Text(
+                                text = "${totalCount} TÍTULOS",
+                                style = TextStyle(
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Slate300,
+                                    letterSpacing = 0.2.em
+                                )
+                            )
                         }
                     }
 
-                    if (selectedYear != null && selectedYear != "all") {
-                        Text("•", color = Color.White.copy(alpha = 0.2f), fontSize = 10.sp)
-                        val yearText = when (selectedYear) {
-                            "classic" -> "RETRO"
-                            "2000" -> "2000s"
-                            else -> "${selectedYear}+"
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Grid Content
+                    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                        val gridWidth = maxWidth
+                        val itemWidth = 98.dp
+                        val spacing = 16.dp
+                        val columnCount =
+                            ((gridWidth + spacing) / (itemWidth + spacing)).toInt().coerceAtLeast(1)
+
+                        androidx.compose.animation.Crossfade(
+                            targetState = isLoading && movies.isEmpty(),
+                            animationSpec = tween(500),
+                            label = "loadingCrossfade"
+                        ) { isInitialLoading ->
+                            if (isInitialLoading) {
+                                // Shimmer Skeleton Grid
+                                LazyVerticalGrid(
+                                    columns = GridCells.Adaptive(itemWidth),
+                                    horizontalArrangement = Arrangement.spacedBy(spacing),
+                                    verticalArrangement = Arrangement.spacedBy(spacing),
+                                    contentPadding = PaddingValues(top = 16.dp, bottom = 32.dp),
+                                    userScrollEnabled = false,
+                                    modifier = Modifier.fillMaxSize()
+                                ) {
+                                    items(columnCount * 4) { // Show 4 rows of placeholders
+                                        Box(modifier = Modifier.width(itemWidth)) {
+                                            MovieCardPlaceholder()
+                                        }
+                                    }
+                                }
+                            } else if (movies.isNotEmpty()) {
+                                // Actual Results Grid
+                                val focusRequesters =
+                                    remember(movies.size) { List(movies.size) { FocusRequester() } }
+
+                                LazyVerticalGrid(
+                                    columns = GridCells.Adaptive(itemWidth),
+                                    horizontalArrangement = Arrangement.spacedBy(spacing),
+                                    verticalArrangement = Arrangement.spacedBy(spacing),
+                                    contentPadding = PaddingValues(top = 16.dp, bottom = 32.dp),
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                ) {
+                                    gridItemsIndexed(movies) { index, movie ->
+                                        if (index >= movies.size - 10 && !isLoading && movies.size < totalCount) {
+                                            LaunchedEffect(Unit) {
+                                                loadMovies(isNewFilter = false)
+                                            }
+                                        }
+
+                                        val isFirstInColumn = index % columnCount == 0
+                                        val isLastInRowItem = (index + 1) % columnCount == 0 || index == movies.size - 1
+                                        val isLastRowItem = index + columnCount >= movies.size
+
+                                        // El resultsFocusRequester apunta al último ítem enfocado
+                                        // (o al 0 si no hay historial). Esto permite restaurar el foco
+                                        // al volver desde la lista de géneros sin cambiar de género.
+                                        val isRestorationTarget = index == lastFocusedGridIndex.coerceIn(0, movies.size - 1)
+
+                                        Box(modifier = Modifier.onFocusChanged { state ->
+                                            if (state.hasFocus) lastFocusedGridIndex = index
+                                        }) {
+                                            MovieCard(
+                                                movie = movie,
+                                                onClick = { onMovieClick(movie.id) },
+                                                cardWidth = itemWidth,
+                                                screenKey = "explore",
+                                                focusRequester = if (isRestorationTarget) resultsFocusRequester
+                                                    else (focusRequesters.getOrNull(index) ?: remember { FocusRequester() }),
+                                                nextFocusRequester = focusRequesters.getOrNull(index + 1),
+                                                leftFocus = if (isFirstInColumn) exploreFocusRequester else null,
+                                                upFocus = if (index < columnCount) starsFocusRequester else null,
+                                                downFocus = if (isLastRowItem) FocusRequester.Cancel else null,
+                                                rightFocus = if (isLastInRowItem) FocusRequester.Cancel else null
+                                            )
+                                        }
+                                    }
+
+                                    if (isLoading && movies.isNotEmpty()) {
+                                        item {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(8.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    "Cargando más...",
+                                                    color = Gold,
+                                                    style = MaterialTheme.typography.labelSmall
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if (!isLoading) {
+                                // No results found
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        "No se encontraron resultados",
+                                        color = Slate400,
+                                        style = MaterialTheme.typography.bodyLarge
+                                    )
+                                }
+                            }
                         }
-                        Text(
-                            text = yearText,
-                            style = TextStyle(fontSize = 10.sp, fontWeight = FontWeight.Black, color = Gold, letterSpacing = 0.2.em)
-                        )
                     }
-
-                    // Separator
-                    Text("|", color = Color.White.copy(alpha = 0.2f), fontWeight = FontWeight.Normal, fontSize = 10.sp)
-
-                    // Matches Count
-                    Text(
-                        text = "${totalCount} TÍTULOS",
-                        style = TextStyle(
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Slate300,
-                            letterSpacing = 0.2.em
-                        )
-                    )
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            if (activeFilterMenu != null) {
+                FilterDialog(
+                    menuType = activeFilterMenu!!,
+                    currentValue = when (activeFilterMenu) {
+                        "stars" -> if (minRating == 0.0) "all" else minRating.toString()
+                        "year" -> selectedYear ?: "all"
+                        else -> sortBy
+                    },
+                    onDismiss = { activeFilterMenu = null },
+                    onSelect = { newValue ->
+                        when (activeFilterMenu) {
+                            "stars" -> minRating =
+                                if (newValue == "all") 0.0 else newValue.toDouble()
 
-            // Grid Content
-            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                val gridWidth = maxWidth
-                val itemWidth = 98.dp
-                val spacing = 16.dp
-                val columnCount = ((gridWidth + spacing) / (itemWidth + spacing)).toInt().coerceAtLeast(1)
-
-                androidx.compose.animation.Crossfade(
-                    targetState = isLoading && movies.isEmpty(),
-                    animationSpec = tween(500),
-                    label = "loadingCrossfade"
-                ) { isInitialLoading ->
-                    if (isInitialLoading) {
-                        // Shimmer Skeleton Grid
-                        LazyVerticalGrid(
-                            columns = GridCells.Adaptive(itemWidth),
-                            horizontalArrangement = Arrangement.spacedBy(spacing),
-                            verticalArrangement = Arrangement.spacedBy(spacing),
-                            contentPadding = PaddingValues(top = 16.dp, bottom = 32.dp),
-                            userScrollEnabled = false,
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            items(columnCount * 4) { // Show 4 rows of placeholders
-                                Box(modifier = Modifier.width(itemWidth)) {
-                                    MovieCardPlaceholder()
-                                }
-                            }
+                            "year" -> selectedYear = if (newValue == "all") null else newValue
+                            "sort" -> sortBy = newValue
                         }
-                    } else if (movies.isNotEmpty()) {
-                        // Actual Results Grid
-                        val focusRequesters = remember(movies.size) { List(movies.size) { FocusRequester() } }
-                        
-                        LazyVerticalGrid(
-                            columns = GridCells.Adaptive(itemWidth),
-                            horizontalArrangement = Arrangement.spacedBy(spacing),
-                            verticalArrangement = Arrangement.spacedBy(spacing),
-                            contentPadding = PaddingValues(top = 16.dp, bottom = 32.dp),
-                            modifier = Modifier
-                                .fillMaxSize()
-                        ) {
-                            itemsIndexed(movies) { index, movie ->
-                                if (index >= movies.size - 10 && !isLoading && movies.size < totalCount) {
-                                    LaunchedEffect(Unit) {
-                                        loadMovies(isNewFilter = false)
-                                    }
-                                }
-                                
-                                val isFirstInColumn = index % columnCount == 0
-                                
-                                MovieCard(
-                                    movie = movie, 
-                                    onClick = { onMovieClick(movie.id) }, 
-                                    cardWidth = itemWidth,
-                                    screenKey = "explore",
-                                    focusRequester = focusRequesters.getOrNull(index) ?: remember { FocusRequester() },
-                                    nextFocusRequester = focusRequesters.getOrNull(index + 1),
-                                    leftFocus = if (isFirstInColumn) exploreFocusRequester else null
-                                )
-                            }
-                            
-                            if (isLoading && movies.isNotEmpty()) {
-                                item {
-                                    Box(modifier = Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) {
-                                        Text("Cargando más...", color = Gold, style = MaterialTheme.typography.labelSmall)
-                                    }
-                                }
-                            }
-                        }
-                    } else if (!isLoading) {
-                        // No results found
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("No se encontraron resultados", color = Slate400, style = MaterialTheme.typography.bodyLarge)
-                        }
+                        activeFilterMenu = null
                     }
-                }
+                )
             }
         }
-    }
-
-    if (activeFilterMenu != null) {
-        FilterDialog(
-            menuType = activeFilterMenu!!,
-            currentValue = when (activeFilterMenu) {
-                "stars" -> if (minRating == 0.0) "all" else minRating.toString()
-                "year" -> selectedYear ?: "all"
-                else -> sortBy
-            },
-            onDismiss = { activeFilterMenu = null },
-            onSelect = { newValue ->
-                when (activeFilterMenu) {
-                    "stars" -> minRating = if (newValue == "all") 0.0 else newValue.toDouble()
-                    "year" -> selectedYear = if (newValue == "all") null else newValue
-                    "sort" -> sortBy = newValue
-                }
-                activeFilterMenu = null
-            }
-        )
-    }
     }
 }
 
@@ -514,7 +659,11 @@ fun GenreSidebarItem(
     genre: Genre,
     isSelected: Boolean,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    onFocusChanged: ((Boolean) -> Unit)? = null,
+    modifier: Modifier = Modifier,
+    rightFocus: FocusRequester? = null,
+    isTop: Boolean = false,
+    isBottom: Boolean = false
 ) {
     var isFocused by remember { mutableStateOf(false) }
     val sidebarRequesters = LocalTabFocusRequesters.current
@@ -561,10 +710,22 @@ fun GenreSidebarItem(
         onClick = onClick,
         modifier = modifier
             .fillMaxWidth()
-            .onFocusChanged { isFocused = it.isFocused }
+            .onFocusChanged {
+                isFocused = it.isFocused
+                onFocusChanged?.invoke(it.isFocused)
+            }
             .focusProperties {
+                if (isTop) {
+                    up = FocusRequester.Cancel
+                }
+                if (isBottom) {
+                    down = FocusRequester.Cancel
+                }
                 if (sidebarRequesters.isNotEmpty()) {
                     left = sidebarRequesters[selectedTab]
+                }
+                if (rightFocus != null) {
+                    right = rightFocus
                 }
             }
             .graphicsLayer {
@@ -618,7 +779,7 @@ fun FilterButton(
     modifier: Modifier = Modifier
 ) {
     var isFocused by remember { mutableStateOf(false) }
-    
+
     val duration = 300
     val color by animateColorAsState(
         targetValue = if (isFocused) Gold else Slate500,
@@ -704,12 +865,14 @@ fun FilterDialog(
                 Pair("2000", "Clásicos 2000s"),
                 Pair("classic", "Retro (Pre-2000)")
             )
+
             "sort" -> listOf(
                 Pair("popularity", "Tendencias"),
                 Pair("vote_average", "Mejor Valoradas"),
                 Pair("release_date", "Lanz. Recientes"),
                 Pair("title", "Alfabético (A-Z)")
             )
+
             else -> emptyList()
         }
     }
@@ -758,7 +921,7 @@ fun FilterDialog(
             ) {
                 if (menuType == "stars") {
                     var isSliderFocused by remember { mutableStateOf(false) }
-                    
+
                     Column(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalAlignment = Alignment.CenterHorizontally
@@ -803,20 +966,24 @@ fun FilterDialog(
                                                     true
                                                 } else false
                                             }
+
                                             Key.DirectionRight -> {
                                                 if (currentIndex < starsOptions.size - 1) {
                                                     currentIndex++
                                                     true
                                                 } else false
                                             }
+
                                             Key.DirectionUp, Key.DirectionDown -> {
                                                 onDismiss()
                                                 true
                                             }
+
                                             Key.DirectionCenter, Key.Enter -> {
                                                 onSelect(starsOptions[currentIndex].id)
                                                 true
                                             }
+
                                             else -> false
                                         }
                                     } else false
@@ -828,11 +995,15 @@ fun FilterDialog(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(6.dp)
-                                    .background(Color.White.copy(alpha = 0.1f), RoundedCornerShape(3.dp))
+                                    .background(
+                                        Color.White.copy(alpha = 0.1f),
+                                        RoundedCornerShape(3.dp)
+                                    )
                             )
 
                             // Active Track
-                            val progressFraction = currentIndex.toFloat() / (starsOptions.size - 1)
+                            val progressFraction =
+                                currentIndex.toFloat() / (starsOptions.size - 1)
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth(progressFraction.coerceAtLeast(0.01f))
@@ -848,11 +1019,18 @@ fun FilterDialog(
                             // Knob
                             Box(
                                 modifier = Modifier
-                                    .align(androidx.compose.ui.BiasAlignment(progressFraction * 2 - 1, 0f))
+                                    .align(
+                                        androidx.compose.ui.BiasAlignment(
+                                            progressFraction * 2 - 1,
+                                            0f
+                                        )
+                                    )
                                     .size(if (isSliderFocused) 18.dp else 14.dp)
                                     .border(
                                         width = 2.dp,
-                                        color = if (isSliderFocused) Gold else Color.White.copy(alpha = 0.8f),
+                                        color = if (isSliderFocused) Gold else Color.White.copy(
+                                            alpha = 0.8f
+                                        ),
                                         shape = RoundedCornerShape(9.dp)
                                     )
                                     .background(Color.White, RoundedCornerShape(9.dp))
@@ -873,7 +1051,9 @@ fun FilterDialog(
                                     style = TextStyle(
                                         fontSize = 10.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = if (isHighlighted) Color.White.copy(alpha = 0.8f) else Color.White.copy(alpha = 0.2f)
+                                        color = if (isHighlighted) Color.White.copy(alpha = 0.8f) else Color.White.copy(
+                                            alpha = 0.2f
+                                        )
                                     )
                                 )
                             }
@@ -910,7 +1090,8 @@ fun FilterDialog(
                                 val isSelected = opt.first == currentValue
                                 var isFocused by remember { mutableStateOf(false) }
 
-                                val containerColor = if (isFocused) Color.White else Color.Transparent
+                                val containerColor =
+                                    if (isFocused) Color.White else Color.Transparent
                                 val textColor = when {
                                     isFocused -> Color.Black
                                     isSelected -> Gold
@@ -942,6 +1123,7 @@ fun FilterDialog(
                                                         onDismiss()
                                                         true
                                                     }
+
                                                     else -> false
                                                 }
                                             } else false

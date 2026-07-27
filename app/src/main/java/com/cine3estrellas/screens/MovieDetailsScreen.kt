@@ -143,8 +143,9 @@ fun MovieDetailsScreen(
 
     fun loadMovieDetails() {
         errorMessage = null
-        // If we already have full details and similar movies, don't fetch again
-        if (DataCache.movieDetailsMap.containsKey(movieId) && DataCache.similarMoviesMap.containsKey(movieId)) {
+        // Si ya tenemos detalles completos Y películas similares (no vacías), no volvemos a buscar
+        val cachedSimilar = DataCache.similarMoviesMap[movieId]
+        if (DataCache.movieDetailsMap.containsKey(movieId) && cachedSimilar != null && cachedSimilar.isNotEmpty()) {
             return
         }
 
@@ -173,9 +174,22 @@ fun MovieDetailsScreen(
                     movie = it
                 }
 
+                // Collection + Similar Movies
+                val collectionId = TmdbManager.getMovieCollectionId(movieId)
+                val collectionInDb = if (collectionId != null) {
+                    val collectionMovies = TmdbManager.getCollectionMovies(collectionId)
+                    SupabaseManager.filterMoviesInDatabase(collectionMovies).filter { it.id != movieId }
+                } else emptyList()
+
                 val similar = TmdbManager.getSimilarMovies(movieId)
-                DataCache.similarMoviesMap[movieId] = similar
-                similarMovies = similar
+                val filteredSimilar = SupabaseManager.filterMoviesInDatabase(similar)
+
+                val collectionIds = collectionInDb.map { it.id }.toSet()
+                val uniqueSimilar = filteredSimilar.filter { it.id != movieId && !collectionIds.contains(it.id) }
+                val finalSimilarList = collectionInDb + uniqueSimilar
+
+                DataCache.similarMoviesMap[movieId] = finalSimilarList
+                similarMovies = finalSimilarList
             } catch (e: Exception) {
                 if (movie == null) {
                     errorMessage = "Error al cargar detalles: ${e.message}"
@@ -337,7 +351,7 @@ fun MovieDetailsScreen(
                                                 .background(if (isFocused) Gold.copy(alpha = 0.15f) else Color.Transparent, RoundedCornerShape(5.dp))
                                                 .padding(horizontal = 5.dp, vertical = 1.dp)
                                         ) {
-                                            Text(text = "HD", style = MaterialTheme.typography.labelSmall, color = if (isFocused) Gold else Color.White.copy(alpha = 0.4f), fontWeight = FontWeight.Black, fontSize = 8.sp)
+                                            Text(text = version.formattedQuality, style = MaterialTheme.typography.labelSmall, color = if (isFocused) Gold else Color.White.copy(alpha = 0.4f), fontWeight = FontWeight.Black, fontSize = 8.sp)
                                         }
                                     }
                                 }
@@ -482,7 +496,7 @@ fun MovieDetailsScreen(
                                 Text(text = runtimeText, color = Color.White.copy(alpha = 0.9f), style = MaterialTheme.typography.titleMedium)
 
                                 Box(modifier = Modifier.border(1.dp, Gold, RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp)) {
-                                    Text(text = "HD", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Black, color = Gold, fontSize = 11.sp)
+                                    Text(text = m.maxQuality, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Black, color = Gold, fontSize = 11.sp)
                                 }
 
                                 val versionKeys = m.versions?.keys ?: emptySet()
@@ -570,7 +584,8 @@ fun MovieDetailsScreen(
                                         }
                                         .focusProperties { 
                                             up = FocusRequester.Cancel
-                                            left = if (sidebarRequesters.isNotEmpty()) sidebarRequesters[selectedTab] else FocusRequester.Default 
+                                            left = if (sidebarRequesters.isNotEmpty()) sidebarRequesters[selectedTab] else FocusRequester.Default
+                                            if (similarMovies.isEmpty()) down = FocusRequester.Cancel
                                         }
                                         .zIndex(if (isReproducirFocused) 1f else 0f)
                                         .graphicsLayer {
@@ -659,7 +674,11 @@ fun MovieDetailsScreen(
                                      },
                                      modifier = Modifier
                                          .onFocusChanged { isFavoritosFocused = it.isFocused }
-                                         .focusProperties { up = FocusRequester.Cancel }
+                                         .focusProperties { 
+                                             up = FocusRequester.Cancel
+                                             right = FocusRequester.Cancel
+                                             if (similarMovies.isEmpty()) down = FocusRequester.Cancel
+                                         }
                                          .zIndex(if (isFavoritosFocused) 1f else 0f)
                                          .graphicsLayer {
                                              scaleX = favoritosScale
@@ -705,7 +724,14 @@ fun MovieDetailsScreen(
                             Text(text = "Películas Similares", style = MaterialTheme.typography.headlineSmall, color = Color.White, modifier = Modifier.padding(horizontal = 48.dp))
                             Spacer(modifier = Modifier.height(16.dp))
                             LazyRow(contentPadding = PaddingValues(horizontal = 48.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                itemsIndexed(similarMovies) { index, sim -> MovieCard(movie = sim, onClick = { onMovieClick(sim.id) }, isFirstInRow = index == 0) }
+                                itemsIndexed(similarMovies) { index, sim -> 
+                                    MovieCard(
+                                        movie = sim, 
+                                        onClick = { onMovieClick(sim.id) }, 
+                                        isFirstInRow = index == 0,
+                                        downFocus = FocusRequester.Cancel
+                                    ) 
+                                }
                             }
                         }
                     }

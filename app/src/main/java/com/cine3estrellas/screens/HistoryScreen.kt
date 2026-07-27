@@ -54,10 +54,10 @@ import androidx.tv.material3.*
 import coil.compose.AsyncImage
 import com.cine3estrellas.*
 import io.github.jan.supabase.postgrest.from
+import io.github.jan.supabase.postgrest.query.Columns
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-// ─── Sort options ─────────────────────────────────────────────────────────────
 private enum class HistSortMode(val label: String) {
     RECENT("Visto recientemente"),
     RATING("Mejor valoradas"),
@@ -65,7 +65,6 @@ private enum class HistSortMode(val label: String) {
     TITLE("Alfabético (A-Z)")
 }
 
-// ─── Main screen ──────────────────────────────────────────────────────────────
 @OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
@@ -74,7 +73,6 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
     val sidebarRequesters = LocalTabFocusRequesters.current
     val selectedTab = LocalSelectedTab.current
 
-    // ── State ──────────────────────────────────────────────────────────────────
     val historyIds = remember(DataCache.currentUser) {
         DataCache.currentUser?.watchHistory ?: emptyList()
     }
@@ -85,7 +83,6 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
     var selectedYear by remember { mutableStateOf<String?>(null) }
     var activeFilterMenu by remember { mutableStateOf<String?>(null) }
 
-    // Focus requesters for filter row
     val sortFR = remember { FocusRequester() }
     val ratingFR = remember { FocusRequester() }
     val yearFR = remember { FocusRequester() }
@@ -93,56 +90,52 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
     val backFR = remember { FocusRequester() }
     var editMode by remember { mutableStateOf(false) }
 
-    // Exit edit mode on back press
     BackHandler(enabled = editMode) {
         editMode = false
     }
-    
+
     BackHandler(enabled = !editMode) {
         onBack()
     }
 
-    // ── Fetch history movies ──────────────────────────────────────────────────
     LaunchedEffect(historyIds) {
-        val currentIds = allMovies.map { it.id }
-        val needsFetch = historyIds.any { it !in currentIds }
-        if (needsFetch) {
-            if (historyIds.isEmpty()) { allMovies = emptyList(); return@LaunchedEffect }
+        if (historyIds.isEmpty()) {
+            allMovies = emptyList()
+            return@LaunchedEffect
+        }
+        val missingIds = historyIds.filter { !DataCache.movieCardCache.containsKey(it) }
+        if (missingIds.isNotEmpty()) {
             isLoading = true
             try {
                 val fetched = SupabaseManager.client.from("movies")
-                    .select { filter { isIn("id", historyIds) } }
+                    .select(columns = Columns.list("id", "title", "poster_path", "backdrop_path", "vote_average", "genre_ids", "release_date")) { filter { isIn("id", missingIds) } }
                     .decodeList<Movie>()
-                // Default order = watch order (historyIds order)
-                allMovies = historyIds.mapNotNull { id -> fetched.find { it.id == id } }
+                DataCache.cacheMovies(fetched)
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
                 isLoading = false
             }
-        } else {
-            // Just update in-memory list (prevents loading screen and layout destruction)
-            allMovies = historyIds.mapNotNull { id -> allMovies.find { it.id == id } }
         }
+        allMovies = historyIds.mapNotNull { id -> DataCache.movieCardCache[id] }
     }
 
-    // ── Derived: sorted & filtered list ───────────────────────────────────────
     val displayMovies = remember(allMovies, sortMode, minRating, selectedYear) {
         var list = allMovies.toList()
-        // Apply rating filter
         if (minRating > 0.0) list = list.filter { (it.vote_average ?: 0.0) >= minRating }
-        // Apply year filter
         val currYear = selectedYear
         if (currYear != null && currYear != "all") {
             list = when (currYear) {
                 "classic" -> list.filter { (it.release_date ?: "9999") < "2000" }
-                "2000" -> list.filter { val y = it.release_date ?: "9999"; y >= "2000" && y < "2010" }
+                "2000" -> list.filter {
+                    val y = it.release_date ?: "9999"; y >= "2000" && y < "2010"
+                }
+
                 else -> list.filter { (it.release_date ?: "9999") >= currYear }
             }
         }
-        // Apply sort
         list = when (sortMode) {
-            HistSortMode.RECENT -> list // already in recent order
+            HistSortMode.RECENT -> list
             HistSortMode.RATING -> list.sortedByDescending { it.vote_average ?: 0.0 }
             HistSortMode.YEAR_DESC -> list.sortedByDescending { it.release_date ?: "" }
             HistSortMode.TITLE -> list.sortedBy { it.title }
@@ -150,16 +143,14 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
         list
     }
 
-    // Map of movie.id to FocusRequester
     val focusRequesters = remember { mutableStateMapOf<Int, FocusRequester>() }
     val gridState = rememberLazyGridState()
 
-    // Handle focus restoration when returning from movie details
     LaunchedEffect(isDetailsActive, displayMovies) {
         if (!isDetailsActive && displayMovies.isNotEmpty()) {
             val restoreId = DataCache.movieIdToRestore
             val restoreKey = DataCache.keyToRestore
-            
+
             val shouldRestore = if (restoreId != null && restoreKey == "history_full") {
                 true
             } else {
@@ -172,7 +163,8 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
                     delay(100)
                     try {
                         focusRequesters.getOrPut(targetId) { FocusRequester() }.requestFocus()
-                    } catch (e: Exception) {}
+                    } catch (e: Exception) {
+                    }
                     DataCache.movieIdToRestore = null
                     DataCache.keyToRestore = null
                 }
@@ -180,11 +172,9 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
         }
     }
 
-    // Auto-focus first card when opening overlay
     var initialFocusRequested by remember { mutableStateOf(false) }
     LaunchedEffect(displayMovies, isDetailsActive) {
         if (displayMovies.isNotEmpty() && !isDetailsActive && !initialFocusRequested) {
-            // If we are NOT restoring focus from a previous session/detail
             if (DataCache.globalLastFocusedKey != "history_full") {
                 initialFocusRequested = true
                 delay(150)
@@ -192,32 +182,30 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
                     displayMovies.firstOrNull()?.let {
                         focusRequesters.getOrPut(it.id) { FocusRequester() }.requestFocus()
                     }
-                } catch (e: Exception) {}
+                } catch (e: Exception) {
+                }
             }
         }
     }
 
-    // Auto-focus first card when entering edit mode
     LaunchedEffect(editMode) {
         if (editMode && displayMovies.isNotEmpty()) {
             try {
                 displayMovies.firstOrNull()?.let {
                     focusRequesters.getOrPut(it.id) { FocusRequester() }.requestFocus()
                 }
-            } catch (e: Exception) {}
+            } catch (e: Exception) {
+            }
         }
     }
 
-    // ── Hero movie = first in displayMovies ───────────────────────────────────
     val heroMovie = displayMovies.firstOrNull()
 
-    // ── Genre stats ───────────────────────────────────────────────────────────
     val genreStats = remember(allMovies) {
         val map = mutableMapOf<Int, Int>()
         allMovies.forEach { m -> m.genre_ids?.forEach { g -> map[g] = (map[g] ?: 0) + 1 } }
         map.entries.sortedByDescending { it.value }.take(3)
     }
-    // Map TMDB genre ids to names (basic mapping)
     val tmdbGenreNames = mapOf(
         28 to "Acción", 12 to "Aventura", 16 to "Animación", 35 to "Comedia",
         80 to "Crimen", 99 to "Documental", 18 to "Drama", 10751 to "Familia",
@@ -226,20 +214,17 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
         53 to "Suspenso", 10752 to "Bélica", 37 to "Western"
     )
 
-    // ── Layout ────────────────────────────────────────────────────────────────
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
             .graphicsLayer { clip = false }
     ) {
-        // ── Hero Banner ───────────────────────────────────────────────────────
         Box(
             modifier = Modifier
-            .fillMaxWidth()
-            .height(180.dp)
+                .fillMaxWidth()
+                .height(180.dp)
         ) {
-            // Background image
             if (heroMovie != null) {
                 AsyncImage(
                     model = "https://image.tmdb.org/t/p/original${heroMovie.backdrop_path ?: heroMovie.poster_path}",
@@ -248,10 +233,11 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
-                Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0A0C10)))
+                Box(modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF0A0C10)))
             }
 
-            // Gradient overlay
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -263,13 +249,11 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
                         )
                     )
             )
-            // Hero content
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(start = 48.dp, bottom = 40.dp, end = 320.dp)
             ) {
-                // Badge row
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -277,12 +261,19 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
                 ) {
                     Box(
                         modifier = Modifier
-                            .background(Color(0xFF60A5FA).copy(alpha = 0.15f), RoundedCornerShape(4.dp))
-                            .border(1.dp, Color(0xFF60A5FA).copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+                            .background(
+                                Color(0xFF60A5FA).copy(alpha = 0.15f),
+                                RoundedCornerShape(4.dp)
+                            )
+                            .border(
+                                1.dp,
+                                Color(0xFF60A5FA).copy(alpha = 0.6f),
+                                RoundedCornerShape(4.dp)
+                            )
                             .padding(horizontal = 8.dp, vertical = 3.dp)
                     ) {
                         Text(
-                            "▶\uFE0F VISTO",
+                            "▶️ VISTO",
                             fontSize = 9.sp,
                             fontWeight = FontWeight.Black,
                             color = Color(0xFF60A5FA),
@@ -306,7 +297,6 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
                     }
                 }
 
-                // Title
                 Text(
                     text = heroMovie?.title?.cleanTitle() ?: "MI HISTORIAL",
                     style = MaterialTheme.typography.headlineLarge,
@@ -317,7 +307,6 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
                 )
             }
 
-            // Stats panel (top-right corner)
             HistoryStatsPanel(
                 total = allMovies.size,
                 filtered = displayMovies.size,
@@ -329,7 +318,6 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
             )
         }
 
-        // ── Controls row ──────────────────────────────────────────────────────
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -337,7 +325,6 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Left: back button and count info
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(16.dp)
@@ -348,6 +335,8 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
                         .focusRequester(backFR)
                         .focusProperties {
                             right = sortFR
+                            up = FocusRequester.Cancel
+                            left = FocusRequester.Cancel
                         },
                     colors = ButtonDefaults.colors(
                         containerColor = Color.White.copy(alpha = 0.05f),
@@ -365,7 +354,11 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("VOLVER", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                        Text(
+                            "VOLVER",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
 
@@ -389,7 +382,6 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
                 }
             }
 
-            // Right: filter buttons
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 HistFilterChip(
                     text = sortMode.label.uppercase(),
@@ -398,7 +390,9 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
                     onClick = { activeFilterMenu = "sort" },
                     leftFR = backFR,
                     rightFR = ratingFR,
-                    modifier = Modifier.focusRequester(sortFR)
+                    modifier = Modifier
+                        .focusRequester(sortFR)
+                        .focusProperties { up = FocusRequester.Cancel }
                 )
                 HistFilterChip(
                     text = if (minRating > 0.0) "$minRating+ ★" else "ESTRELLAS",
@@ -407,7 +401,9 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
                     onClick = { activeFilterMenu = "stars" },
                     leftFR = sortFR,
                     rightFR = yearFR,
-                    modifier = Modifier.focusRequester(ratingFR)
+                    modifier = Modifier
+                        .focusRequester(ratingFR)
+                        .focusProperties { up = FocusRequester.Cancel }
                 )
                 HistFilterChip(
                     text = when (selectedYear) {
@@ -421,109 +417,182 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
                     onClick = { activeFilterMenu = "year" },
                     leftFR = ratingFR,
                     rightFR = editFR,
-                    modifier = Modifier.focusRequester(yearFR)
+                    modifier = Modifier
+                        .focusRequester(yearFR)
+                        .focusProperties { up = FocusRequester.Cancel }
                 )
                 HistEditButton(
                     isActive = editMode,
                     onClick = { editMode = !editMode },
                     leftFR = yearFR,
-                    modifier = Modifier.focusRequester(editFR)
+                    modifier = Modifier
+                        .focusRequester(editFR)
+                        .focusProperties { up = FocusRequester.Cancel }
                 )
             }
         }
 
         if (isLoading) {
-            Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center
+            ) {
                 CircularProgressIndicator(color = Gold)
             }
         } else if (allMovies.isEmpty()) {
-            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            Box(modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)) {
                 HistoryEmptyState()
             }
         } else {
-            // ── History Grid ──────────────────────────────────────────────────
-            BoxWithConstraints(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            BoxWithConstraints(modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)) {
                 val gridWidth = maxWidth
                 val itemWidth = 98.dp
                 val spacing = 12.dp
-                val columnCount = ((gridWidth - 96.dp + spacing) / (itemWidth + spacing)).toInt().coerceAtLeast(1)
+                val columnCount =
+                    ((gridWidth - 96.dp + spacing) / (itemWidth + spacing)).toInt().coerceAtLeast(1)
 
                 LazyVerticalGrid(
                     state = gridState,
-                    columns = GridCells.Adaptive(itemWidth),
+                    columns = GridCells.Fixed(columnCount),
                     horizontalArrangement = Arrangement.spacedBy(spacing),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier
-                        .fillMaxSize(),
+                    modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(
                         start = 48.dp,
                         end = 48.dp,
-                        top = 16.dp, 
+                        top = 16.dp,
                         bottom = 150.dp
                     )
                 ) {
                     itemsIndexed(displayMovies, key = { _, movie -> movie.id }) { index, movie ->
                         val fr = focusRequesters.getOrPut(movie.id) { FocusRequester() }
-                        val nextMovie = displayMovies.getOrNull(index + 1)
-                        val nextFr = if (nextMovie != null) focusRequesters.getOrPut(nextMovie.id) { FocusRequester() } else null
-                        
-                        HistMovieCard(
-                            movie = movie,
-                            isFirstInRow = (index % columnCount == 0),
-                            editMode = editMode,
-                            onMovieClick = { onMovieClick(movie.id) },
-                            onRemove = {
-                                val user = DataCache.currentUser
-                                if (user != null) {
-                                    scope.launch {
-                                        val targetMovie = if (index >= displayMovies.size - 1) {
-                                            displayMovies.getOrNull(index - 1)
-                                        } else {
-                                            displayMovies.getOrNull(index + 1)
-                                        }
-                                        val targetMovieId = targetMovie?.id
 
-                                        // 1. Focus target movie immediately to prevent focus from escaping the grid
-                                        if (targetMovieId != null) {
-                                            try {
-                                                focusRequesters.getOrPut(targetMovieId) { FocusRequester() }.requestFocus()
-                                            } catch (e: Exception) {
-                                                e.printStackTrace()
+                        // Primera fila: al subir va a los filtros
+                        val isFirstRow = index < columnCount
+                        // Última fila real: el ítems que comienzan en el último bloque de filas
+                        val lastRowStart = ((displayMovies.size - 1) / columnCount) * columnCount
+                        val isLastRow = index >= lastRowStart
+
+                        val rightFr = if (index < displayMovies.size - 1) {
+                            val nextId = displayMovies[index + 1].id
+                            focusRequesters.getOrPut(nextId) { FocusRequester() }
+                        } else {
+                            FocusRequester.Cancel
+                        }
+
+                        Box(
+                            modifier = Modifier.onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                when (keyEvent.key) {
+                                    Key.DirectionUp -> {
+                                        if (isFirstRow) {
+                                            try { editFR.requestFocus() } catch (_: Exception) {}
+                                        } else {
+                                            val targetIndex = index - columnCount
+                                            val targetId = displayMovies[targetIndex].id
+                                            scope.launch {
+                                                // Primero hacemos scroll al ítem objetivo para forzar su composición en pantalla
+                                                gridState.scrollToItem(targetIndex)
+                                                delay(50) // Pequeño delay para que Compose registre el nuevo elemento en el árbol de vistas
+                                                val targetFr = focusRequesters.getOrPut(targetId) { FocusRequester() }
+                                                try {
+                                                    targetFr.requestFocus()
+                                                } catch (_: Exception) {
+                                                    // Fallback por si acaso
+                                                    delay(50)
+                                                    try { targetFr.requestFocus() } catch (_: Exception) {}
+                                                }
                                             }
                                         }
+                                        true
+                                    }
+                                    Key.DirectionDown -> {
+                                        if (!isLastRow) {
+                                            val targetIndex = minOf(
+                                                index + columnCount,
+                                                displayMovies.size - 1
+                                            )
+                                            val targetId = displayMovies[targetIndex].id
+                                            scope.launch {
+                                                // Hacemos scroll al ítem inferior para asegurar que esté renderizado
+                                                gridState.scrollToItem(maxOf(0, targetIndex - columnCount + 1))
+                                                delay(50)
+                                                val targetFr = focusRequesters.getOrPut(targetId) { FocusRequester() }
+                                                try {
+                                                    targetFr.requestFocus()
+                                                } catch (_: Exception) {
+                                                    delay(50)
+                                                    try { targetFr.requestFocus() } catch (_: Exception) {}
+                                                }
+                                            }
+                                        }
+                                        true
+                                    }
+                                    else -> false
+                                }
+                            }
+                        ) {
+                            HistMovieCard(
+                                movie = movie,
+                                isFirstInRow = (index % columnCount == 0),
+                                editMode = editMode,
+                                onMovieClick = { onMovieClick(movie.id) },
+                                onRemove = {
+                                    val user = DataCache.currentUser
+                                    if (user != null) {
+                                        scope.launch {
+                                            val targetMovie = if (index >= displayMovies.size - 1) {
+                                                displayMovies.getOrNull(index - 1)
+                                            } else {
+                                                displayMovies.getOrNull(index + 1)
+                                            }
+                                            val targetMovieId = targetMovie?.id
 
-                                        val newHistory = user.watchHistory.filter { it != movie.id }
-                                        val updatedUser = user.copy(watchHistory = newHistory)
-                                        val savedUser = SupabaseManager.upsertUser(updatedUser)
-                                        if (savedUser != null) {
-                                            focusRequesters.remove(movie.id)
-                                            DataCache.currentUser = savedUser
-                                            
-                                            // 2. Re-request focus on the target movie after recomposition just in case
-                                            delay(100)
                                             if (targetMovieId != null) {
                                                 try {
-                                                    focusRequesters.getOrPut(targetMovieId) { FocusRequester() }.requestFocus()
+                                                    focusRequesters.getOrPut(targetMovieId) { FocusRequester() }
+                                                        .requestFocus()
                                                 } catch (e: Exception) {
                                                     e.printStackTrace()
                                                 }
                                             }
+
+                                            val newHistory = user.watchHistory.filter { it != movie.id }
+                                            val updatedUser = user.copy(watchHistory = newHistory)
+                                            val savedUser = SupabaseManager.upsertUser(updatedUser)
+                                            if (savedUser != null) {
+                                                focusRequesters.remove(movie.id)
+                                                DataCache.currentUser = savedUser
+
+                                                delay(100)
+                                                if (targetMovieId != null) {
+                                                    try {
+                                                        focusRequesters.getOrPut(targetMovieId) { FocusRequester() }
+                                                            .requestFocus()
+                                                    } catch (e: Exception) {
+                                                        e.printStackTrace()
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
-                                }
-                            },
-                            upFocusRequester = if (index < columnCount) editFR else null,
-                            focusRequester = fr,
-                            nextFocusRequester = nextFr
-                        )
+                                },
+                                rightFocusRequester = rightFr,
+                                focusRequester = fr
+                            )
+                        }
                     }
                 }
             }
         }
-    } // end outer Column
+    }
 
-
-    // ── Filter dialogs ────────────────────────────────────────────────────────
     if (activeFilterMenu != null) {
         HistFilterDialog(
             menuType = activeFilterMenu!!,
@@ -545,7 +614,6 @@ fun HistoryScreen(onMovieClick: (Int) -> Unit, onBack: () -> Unit) {
     }
 }
 
-// ─── Stats panel ──────────────────────────────────────────────────────────────
 @Composable
 private fun HistoryStatsPanel(
     total: Int,
@@ -570,17 +638,27 @@ private fun HistoryStatsPanel(
             letterSpacing = 0.2.em
         )
         Spacer(modifier = Modifier.height(12.dp))
-        
+
         Row(verticalAlignment = Alignment.Bottom) {
             Text("$total", fontSize = 28.sp, fontWeight = FontWeight.Black, color = Color.White)
-            Text(" vistos", fontSize = 12.sp, color = Color.White.copy(alpha = 0.5f), modifier = Modifier.padding(bottom = 6.dp, start = 4.dp))
+            Text(
+                " vistos",
+                fontSize = 12.sp,
+                color = Color.White.copy(alpha = 0.5f),
+                modifier = Modifier.padding(bottom = 6.dp, start = 4.dp)
+            )
         }
-        
+
         if (genreStats.isNotEmpty()) {
             Spacer(modifier = Modifier.height(12.dp))
-            Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.1f)))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(Color.White.copy(alpha = 0.1f))
+            )
             Spacer(modifier = Modifier.height(12.dp))
-            
+
             Text(
                 "GÉNEROS PREDOMINANTES",
                 fontSize = 8.sp,
@@ -589,10 +667,12 @@ private fun HistoryStatsPanel(
                 letterSpacing = 0.1.em
             )
             Spacer(modifier = Modifier.height(8.dp))
-            
+
             genreStats.forEach { entry ->
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
@@ -612,15 +692,17 @@ private fun HistoryStatsPanel(
     }
 }
 
-// ─── Movie card ───────────────────────────────────────────────────────────────
-@OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class, ExperimentalFoundationApi::class)
+@OptIn(
+    ExperimentalTvMaterial3Api::class,
+    androidx.compose.ui.ExperimentalComposeUiApi::class,
+    ExperimentalFoundationApi::class
+)
 @Composable
 private fun HistMovieCard(
     movie: Movie,
     isFirstInRow: Boolean,
-    upFocusRequester: FocusRequester? = null,
+    rightFocusRequester: FocusRequester? = null,
     focusRequester: FocusRequester = remember { FocusRequester() },
-    nextFocusRequester: FocusRequester? = null,
     editMode: Boolean = false,
     onMovieClick: () -> Unit,
     onRemove: () -> Unit
@@ -628,12 +710,14 @@ private fun HistMovieCard(
     val sidebarRequesters = LocalTabFocusRequesters.current
     val selectedTab = LocalSelectedTab.current
     val isDetailsActive = LocalDetailsActive.current
-    
+    val isCategoryActive = LocalCategoryActive.current
+    val isPlayerActive = LocalPlayerOverlayActive.current
+
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
 
     LaunchedEffect(isFocused) {
-        if (isFocused) {
+        if (isFocused && !isDetailsActive && !isCategoryActive && !isPlayerActive) {
             DataCache.lastFocusedMovieId["history_full"] = movie.id
             DataCache.globalLastFocusedKey = "history_full"
         }
@@ -666,11 +750,25 @@ private fun HistMovieCard(
                 interactionSource = interactionSource,
                 scale = ClickableSurfaceDefaults.scale(focusedScale = 1.0f),
                 border = ClickableSurfaceDefaults.border(
-                    border = Border(androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.1f))),
-                    focusedBorder = Border(androidx.compose.foundation.BorderStroke(2.dp, if (editMode) Color(0xFFFF4444) else Color(0xFF3B82F6)))
+                    border = Border(
+                        androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            Color.White.copy(alpha = 0.1f)
+                        )
+                    ),
+                    focusedBorder = Border(
+                        androidx.compose.foundation.BorderStroke(
+                            2.dp,
+                            if (editMode) Color(0xFFFF4444) else Color(0xFF3B82F6)
+                        )
+                    )
                 ),
                 glow = ClickableSurfaceDefaults.glow(
-                    focusedGlow = Glow((if (editMode) Color(0xFFFF4444) else Color(0xFF3B82F6)).copy(alpha = 0.5f), 10.dp)
+                    focusedGlow = Glow(
+                        (if (editMode) Color(0xFFFF4444) else Color(0xFF3B82F6)).copy(
+                            alpha = 0.5f
+                        ), 10.dp
+                    )
                 ),
                 shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
                 modifier = Modifier
@@ -681,9 +779,8 @@ private fun HistMovieCard(
                         left = if (isFirstInRow && sidebarRequesters.isNotEmpty()) {
                             sidebarRequesters[selectedTab]
                         } else FocusRequester.Default
-                        
-                        right = nextFocusRequester ?: FocusRequester.Cancel
-                        if (upFocusRequester != null) up = upFocusRequester
+
+                        if (rightFocusRequester != null) right = rightFocusRequester
                     }
             ) {
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -693,8 +790,7 @@ private fun HistMovieCard(
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
                     )
-                    
-                    // Edit mode overlay
+
                     if (editMode && isFocused) {
                         Box(
                             modifier = Modifier
@@ -712,16 +808,17 @@ private fun HistMovieCard(
                     }
                 }
             }
-            
+
             Spacer(modifier = Modifier.height(8.dp))
-            
-            // Info below
+
             Text(
                 text = movie.title.cleanTitle(),
                 style = MaterialTheme.typography.labelMedium,
                 maxLines = 1,
                 overflow = if (isFocused) TextOverflow.Visible else TextOverflow.Ellipsis,
-                color = if (isFocused) (if (editMode) Color(0xFFFF8888) else Color.White) else Color.White.copy(alpha = 0.7f),
+                color = if (isFocused) (if (editMode) Color(0xFFFF8888) else Color.White) else Color.White.copy(
+                    alpha = 0.7f
+                ),
                 fontWeight = if (isFocused) FontWeight.Bold else FontWeight.Normal,
                 modifier = Modifier
                     .padding(horizontal = 4.dp)
@@ -735,7 +832,7 @@ private fun HistMovieCard(
                         } else Modifier
                     )
             )
-            
+
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(start = 4.dp, end = 4.dp, top = 2.dp)
@@ -749,14 +846,15 @@ private fun HistMovieCard(
                 Text(
                     text = " ${movie.vote_average ?: 0.0} • ${movie.release_date?.take(4) ?: ""}",
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (isFocused) (if (editMode) Color(0xFFFF8888) else Gold) else Color.White.copy(alpha = 0.5f)
+                    color = if (isFocused) (if (editMode) Color(0xFFFF8888) else Gold) else Color.White.copy(
+                        alpha = 0.5f
+                    )
                 )
             }
 
-            // Fix vertical visibility when focused
             Spacer(modifier = Modifier.height(24.dp))
-        } // end Column
-    } // end Box
+        }
+    }
 }
 
 @Composable
@@ -789,7 +887,6 @@ private fun HistoryEmptyState() {
     }
 }
 
-// ─── Edit button ──────────────────────────────────────────────────────────────
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 private fun HistEditButton(
@@ -799,7 +896,7 @@ private fun HistEditButton(
     leftFR: FocusRequester? = null
 ) {
     var isFocused by remember { mutableStateOf(false) }
-    
+
     val bgColor by animateColorAsState(
         targetValue = when {
             isActive -> Color(0xFFFF4444).copy(alpha = 0.15f)
@@ -830,7 +927,12 @@ private fun HistEditButton(
         ),
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
         border = ClickableSurfaceDefaults.border(
-            border = Border(androidx.compose.foundation.BorderStroke(1.dp, contentColor.copy(alpha = 0.2f))),
+            border = Border(
+                androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    contentColor.copy(alpha = 0.2f)
+                )
+            ),
             focusedBorder = Border(androidx.compose.foundation.BorderStroke(1.dp, contentColor))
         ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1.08f)
@@ -857,7 +959,6 @@ private fun HistEditButton(
     }
 }
 
-// ─── Filter chip ──────────────────────────────────────────────────────────────
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 private fun HistFilterChip(
@@ -889,8 +990,8 @@ private fun HistFilterChip(
     )
     val bgColor by animateColorAsState(
         targetValue = if (isFocused) Color(0xFF60A5FA).copy(alpha = 0.12f)
-                      else if (isActive) Color(0xFF60A5FA).copy(alpha = 0.06f)
-                      else Color.White.copy(alpha = 0.04f),
+        else if (isActive) Color(0xFF60A5FA).copy(alpha = 0.06f)
+        else Color.White.copy(alpha = 0.04f),
         animationSpec = tween(200), label = "chipBg"
     )
     val chipScale by animateFloatAsState(
@@ -904,8 +1005,14 @@ private fun HistFilterChip(
             .onPreviewKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown) {
                     when (event.key) {
-                        Key.DirectionLeft -> { leftFR?.requestFocus(); leftFR != null }
-                        Key.DirectionRight -> { rightFR?.requestFocus(); rightFR != null }
+                        Key.DirectionLeft -> {
+                            leftFR?.requestFocus(); leftFR != null
+                        }
+
+                        Key.DirectionRight -> {
+                            rightFR?.requestFocus(); rightFR != null
+                        }
+
                         else -> false
                     }
                 } else false
@@ -940,7 +1047,6 @@ private fun HistFilterChip(
     }
 }
 
-// ─── Filter dialog ────────────────────────────────────────────────────────────
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 private fun HistFilterDialog(
@@ -954,8 +1060,10 @@ private fun HistFilterDialog(
             .fillMaxSize()
             .zIndex(200f)
             .background(Color.Black.copy(alpha = 0.85f))
-            .onPreviewKeyEvent { 
-                if (it.type == KeyEventType.KeyDown && it.key == Key.Back) { onDismiss(); true } else false 
+            .onPreviewKeyEvent {
+                if (it.type == KeyEventType.KeyDown && it.key == Key.Back) {
+                    onDismiss(); true
+                } else false
             },
         contentAlignment = Alignment.Center
     ) {
@@ -963,11 +1071,16 @@ private fun HistFilterDialog(
             modifier = Modifier.width(320.dp),
             shape = RoundedCornerShape(20.dp),
             colors = SurfaceDefaults.colors(containerColor = Color(0xFF0F1216)),
-            border = Border(androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)))
+            border = Border(
+                androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    Color.White.copy(alpha = 0.1f)
+                )
+            )
         ) {
             Column(modifier = Modifier.padding(24.dp)) {
                 Text(
-                    text = when(menuType) {
+                    text = when (menuType) {
                         "sort" -> "ORDENAR POR"
                         "stars" -> "FILTRAR POR ESTRELLAS"
                         "year" -> "FILTRAR POR AÑO"
@@ -980,16 +1093,36 @@ private fun HistFilterDialog(
                     modifier = Modifier.padding(bottom = 16.dp)
                 )
 
-                val options = when(menuType) {
+                val options = when (menuType) {
                     "sort" -> HistSortMode.entries.map { it.name to it.label }
-                    "stars" -> listOf("all" to "Todas las valoraciones", "8" to "8+ Estrellas", "7" to "7+ Estrellas", "6" to "6+ Estrellas")
-                    "year" -> listOf("all" to "Todos los años", "2024" to "2024", "2023" to "2023", "2020" to "2020+", "2010" to "2010+", "2000" to "2000s", "classic" to "Anteriores a 2000")
+                    "stars" -> listOf(
+                        "all" to "Todas las valoraciones",
+                        "8" to "8+ Estrellas",
+                        "7" to "7+ Estrellas",
+                        "6" to "6+ Estrellas"
+                    )
+
+                    "year" -> listOf(
+                        "all" to "Todos los años",
+                        "2024" to "2024",
+                        "2023" to "2023",
+                        "2020" to "2020+",
+                        "2010" to "2010+",
+                        "2000" to "2000s",
+                        "classic" to "Anteriores a 2000"
+                    )
+
                     else -> emptyList()
                 }
 
                 options.forEachIndexed { idx, (valKey, label) ->
                     val fr = remember { FocusRequester() }
-                    if (idx == 0) LaunchedEffect(Unit) { try { fr.requestFocus() } catch(e:Exception){} }
+                    if (idx == 0) LaunchedEffect(Unit) {
+                        try {
+                            fr.requestFocus()
+                        } catch (e: Exception) {
+                        }
+                    }
 
                     HistDialogOption(
                         label = label,
@@ -1012,7 +1145,7 @@ private fun HistDialogOption(
     modifier: Modifier = Modifier
 ) {
     var isFocused by remember { mutableStateOf(false) }
-    
+
     Surface(
         onClick = onClick,
         modifier = modifier
@@ -1032,12 +1165,19 @@ private fun HistDialogOption(
         ) {
             Text(
                 label,
-                color = if (isSelected) Color(0xFF60A5FA) else if (isFocused) Color.White else Color.White.copy(alpha = 0.6f),
+                color = if (isSelected) Color(0xFF60A5FA) else if (isFocused) Color.White else Color.White.copy(
+                    alpha = 0.6f
+                ),
                 fontSize = 14.sp,
                 fontWeight = if (isSelected || isFocused) FontWeight.Bold else FontWeight.Medium
             )
             if (isSelected) {
-                Icon(Icons.Default.Check, null, tint = Color(0xFF60A5FA), modifier = Modifier.size(16.dp))
+                Icon(
+                    Icons.Default.Check,
+                    null,
+                    tint = Color(0xFF60A5FA),
+                    modifier = Modifier.size(16.dp)
+                )
             }
         }
     }

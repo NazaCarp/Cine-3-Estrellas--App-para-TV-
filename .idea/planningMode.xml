@@ -3,6 +3,8 @@
   <component name="PlanningModeManager">
     <option name="approvalStates">
       <map>
+        <entry key="09a9ee41-b33a-48b5-8958-7a433aee7282" value="false" />
+        <entry key="119267c3-0061-4727-8345-a60c6c4f7bec" value="false" />
         <entry key="20260430-172052-0b0904c2-64cb-4d13-a653-35895431ae47" value="true" />
         <entry key="20260501-123424-04396f60-b3ad-42d7-b0e9-4111ea5bb501" value="true" />
         <entry key="20260521-235905-56b9f3ec-83b9-4e65-8382-8726963b5ff8" value="true" />
@@ -20,6 +22,21 @@
         <entry key="20260606-224503-51c9fff3-4c49-4fe1-a9a7-53c5d1709093" value="true" />
         <entry key="20260609-175645-fca1e8e3-f524-486d-80d3-e0add6a62bd8" value="true" />
         <entry key="20260611-133433-9c777aed-4d70-4c86-9107-71ec9bdc6301" value="true" />
+        <entry key="20260613-191328-70269891-660d-424b-8727-81aea150a9ec" value="true" />
+        <entry key="20260613-224707-34667ced-2bea-4dde-b4a2-83d312a1361f" value="true" />
+        <entry key="20260613-231048-920639fa-600f-4497-b913-af94f13d6879" value="true" />
+        <entry key="20260614-232805-8f967988-aef4-42a5-bb99-b69f3d2133aa" value="false" />
+        <entry key="20260618-124039-d64d0ad2-0aad-409d-b5da-3b5fd05a33ee" value="true" />
+        <entry key="20260619-130128-5f873ad3-bc7e-4e18-bddc-8e36caffb5d9" value="true" />
+        <entry key="20260701-230159-9b519021-fca7-4cad-9a59-57d2242c6781" value="true" />
+        <entry key="20260714-023716-8cb2bd91-0eab-4756-a620-25230d80bf3c" value="true" />
+        <entry key="20260714-101200-7ef85249-0150-48a8-b1b1-5455fff377db" value="true" />
+        <entry key="20260714-130624-603d78d8-ca19-4819-94db-bbcb00a455b0" value="true" />
+        <entry key="20260714-135520-d1b1d9a2-8dcb-4f2b-8c71-4c434f9bff95" value="true" />
+        <entry key="20260714-140931-b2495694-606d-4e77-8930-76d929721c84" value="true" />
+        <entry key="20260714-144745-a0cb28aa-9204-41d8-86e4-77daefe08fb7" value="true" />
+        <entry key="20260714-160256-e4dcca44-8359-4ac4-a3eb-8be0280a8cc0" value="true" />
+        <entry key="e494fc60-0f39-4225-9398-8bed4a5955e2" value="false" />
       </map>
     </option>
   </component>
