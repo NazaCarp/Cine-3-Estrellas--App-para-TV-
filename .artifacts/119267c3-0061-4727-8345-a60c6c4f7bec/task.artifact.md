@@ -1,0 +1,4 @@
+- [ ] Fix navigation in `SearchScreen.kt` (Results -> Keyboard)
+- [ ] Fix navigation in `HomeScreen.kt` (History -> Sidebar)
+- [ ] Fix navigation in `ExploreScreen.kt` (Genres -> Results, Filters -> Results)
+- [ ] Verify focus behavior across all screens
