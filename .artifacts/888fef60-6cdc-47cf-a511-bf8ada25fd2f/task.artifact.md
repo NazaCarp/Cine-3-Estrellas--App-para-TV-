@@ -1,0 +1,4 @@
+- `[ ]` Implementar `generateUniqueAuthCode` en `index.js`
+- `[ ]` Actualizar el flujo de comandos para usar la generación única
+- `[ ]` Verificar la lógica de expiración en Supabase
+- `[ ]` Realizar pruebas de generación de códigos

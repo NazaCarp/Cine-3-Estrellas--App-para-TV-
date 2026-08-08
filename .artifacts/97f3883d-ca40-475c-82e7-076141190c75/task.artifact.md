@@ -1,0 +1,3 @@
+- [ ] Limpiar el proyecto (`./gradlew clean`)
+- [ ] Generar APK de Release para TV (`./gradlew :app:assembleRelease`)
+- [ ] Verificar existencia del APK en `app/build/outputs/apk/release/app-release.apk`

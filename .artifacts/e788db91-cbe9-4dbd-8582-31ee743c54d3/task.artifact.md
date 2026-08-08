@@ -1,0 +1,2 @@
+- [ ] Modificar `MovieDetailsScreen.kt` para fijar el foco en el botón "OBTENER ENLACES"
+- [ ] Verificar la coherencia del código
