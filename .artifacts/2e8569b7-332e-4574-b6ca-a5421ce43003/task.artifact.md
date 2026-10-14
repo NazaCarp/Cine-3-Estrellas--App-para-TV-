@@ -1,0 +1,2 @@
+- `[/]` Ejecutar tarea de Gradle `:app:assembleRelease`
+- `[ ]` Verificar la creación del archivo APK en `app/build/outputs/apk/release/`

@@ -9,10 +9,11 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        minSdk = 26
+        minSdk = 23
     }
 
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
     }
@@ -24,13 +25,14 @@ android {
 }
 
 dependencies {
+    coreLibraryDesugaring(libs.desugar.jdk.libs)
     implementation(libs.androidx.core.ktx)
-    implementation(libs.supabase.postgrest)
-    implementation(libs.supabase.gotrue)
-    implementation(libs.ktor.client.core)
-    implementation(libs.ktor.client.okhttp)
+    api(libs.supabase.postgrest)
+    api(libs.supabase.gotrue)
+    api(libs.ktor.client.core)
+    api(libs.ktor.client.okhttp)
     implementation(libs.okhttp)
-    implementation(libs.androidx.media3.exoplayer) // Needed for some extraction logic potentially
+    api(libs.androidx.media3.exoplayer) // Needed for some extraction logic potentially
     
     // UI dependencies for DataCache if it uses Compose states
     implementation(libs.androidx.activity.compose)
